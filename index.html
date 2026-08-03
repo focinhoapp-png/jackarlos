@@ -15,49 +15,54 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" />
     <title>Jackarlo's</title>
-    <!-- Skeleton: aparece instantaneamente enquanto o JS carrega -->
+    <!-- Skeleton: APENAS #app-loading - não interfere com o layout do app -->
     <style>
-      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-      body { background: #f8fafc; font-family: 'Inter', system-ui, sans-serif; }
       #app-loading {
-        position: fixed; inset: 0;
-        display: flex; flex-direction: column;
-        align-items: center; justify-content: center;
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
         background: #f8fafc;
         z-index: 9999;
         transition: opacity 0.3s ease;
       }
       #app-loading.fade-out { opacity: 0; pointer-events: none; }
-      .loader-logo {
-        width: 96px; height: 96px;
-        border-radius: 20px;
+      #app-loading .loader-logo {
+        width: 88px;
+        height: 88px;
+        border-radius: 18px;
         background: #e2e8f0;
-        margin-bottom: 24px;
+        margin-bottom: 20px;
         overflow: hidden;
-        display: flex; align-items: center; justify-content: center;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
-      .loader-logo img { width: 100%; height: 100%; object-fit: contain; }
-      .loader-spinner {
-        width: 28px; height: 28px;
+      #app-loading .loader-logo img { width: 100%; height: 100%; object-fit: contain; }
+      #app-loading .loader-spinner {
+        width: 26px;
+        height: 26px;
         border: 2.5px solid #e2e8f0;
         border-top-color: #2563eb;
         border-radius: 50%;
-        animation: spin 0.75s linear infinite;
+        animation: loader-spin 0.75s linear infinite;
       }
-      .loader-text {
-        margin-top: 12px;
+      #app-loading .loader-text {
+        margin-top: 10px;
         font-size: 13px;
         color: #94a3b8;
-        letter-spacing: 0.02em;
+        font-family: system-ui, sans-serif;
       }
-      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes loader-spin { to { transform: rotate(360deg); } }
     </style>
   </head>
   <body>
     <!-- Loading visual imediato — sem esperar o JS -->
     <div id="app-loading">
       <div class="loader-logo">
-        <img src="/logojt.webp" onerror="this.src='/logojt.PNG'" alt="Logo" width="96" height="96" />
+        <img src="/logojt.webp" onerror="this.src='/logojt.PNG'" alt="Logo" width="88" height="88" />
       </div>
       <div class="loader-spinner"></div>
       <p class="loader-text">Carregando...</p>

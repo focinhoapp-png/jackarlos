@@ -62,7 +62,18 @@ export function LoginPage() {
       <div className="w-full max-w-[400px] z-10">
         <div className="flex flex-col items-center mb-6">
           <div className="h-48 w-48 flex items-center justify-center -mb-6">
-            <img src="/logojt.PNG" alt="Logo Jackarlo" className="w-full h-full object-contain" />
+            <picture>
+              <source srcSet="/logojt.webp" type="image/webp" />
+              <img
+                src="/logojt.PNG"
+                alt="Logo Jackarlo"
+                className="w-full h-full object-contain"
+                width="192"
+                height="192"
+                fetchPriority="high"
+                decoding="async"
+              />
+            </picture>
           </div>
         </div>
 

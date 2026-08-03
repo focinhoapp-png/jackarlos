@@ -479,7 +479,7 @@ export function ScannerPanel() {
         {activeDeliveries.length > 0 && (
           <div className="pt-6 border-t border-border">
             <h2 className="text-xl font-bold tracking-tight mb-1">Em Rota (Saiu para Entrega)</h2>
-            <p className="text-muted-foreground mb-4">Entregadores que estão atualmente realizando entregas (registrados no DB).</p>
+            <p className="text-muted-foreground mb-4">Entregadores que estão atualmente realizando entregas.</p>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {activeDeliveries.map((load) => (
                 <Card 

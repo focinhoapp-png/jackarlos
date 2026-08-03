@@ -1,0 +1,6 @@
+{
+  "name": "Jackarlos",
+  "description": "Sistema profissional de gerenciamento de carregamento de encomendas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

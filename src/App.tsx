@@ -6,11 +6,11 @@
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
-// Carregamento imediato — necessário para o primeiro render
+// Carregamento imediato — o layout principal e login nunca devem ser lazy
 import { LoginPage } from './pages/Login';
+import { AdminLayout } from './layouts/AdminLayout';
 
 // Lazy loading — cada página só é baixada quando o usuário navegar até ela
-const AdminLayout   = lazy(() => import('./layouts/AdminLayout').then(m => ({ default: m.AdminLayout })));
 const Dashboard     = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
 const ScannerPanel  = lazy(() => import('./pages/ScannerPanel').then(m => ({ default: m.ScannerPanel })));
 const History       = lazy(() => import('./pages/History').then(m => ({ default: m.History })));
@@ -31,14 +31,12 @@ const Logs          = lazy(() => import('./pages/Logs').then(m => ({ default: m.
 const Entregas      = lazy(() => import('./pages/Entregas').then(m => ({ default: m.Entregas })));
 const Despesas      = lazy(() => import('./pages/Despesas').then(m => ({ default: m.Despesas })));
 
-// Fallback exibido enquanto um chunk está sendo baixado
-function PageLoader() {
+// Spinner exibido na área de conteúdo enquanto a página carrega (sidebar fica visível)
+function ContentLoader() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="flex flex-col items-center gap-3">
-        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-        <p className="text-sm text-muted-foreground">Carregando...</p>
-      </div>
+    <div className="flex flex-col items-center justify-center h-64 gap-3">
+      <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      <p className="text-sm text-muted-foreground">Carregando...</p>
     </div>
   );
 }
@@ -46,7 +44,7 @@ function PageLoader() {
 export default function App() {
   return (
     <BrowserRouter>
-      <Suspense fallback={<PageLoader />}>
+      <Suspense fallback={null}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
 
@@ -54,6 +52,7 @@ export default function App() {
 
           <Route path="/driver/dashboard" element={<div className="bg-background min-h-screen text-foreground p-4"><DriverPanel /></div>} />
 
+          {/* Admin: Suspense só na área de conteúdo — sidebar nunca desaparece */}
           <Route path="/admin" element={<AdminLayout />}>
             <Route index element={<Navigate to="/admin/detalhamento" replace />} />
             {/* Aliases para compatibilidade com links antigos */}
@@ -61,24 +60,24 @@ export default function App() {
             <Route path="scanner"    element={<Navigate to="/admin/carregamentos" replace />} />
             <Route path="history"    element={<Navigate to="/admin/historico" replace />} />
             <Route path="config"     element={<Navigate to="/admin/meus-dados" replace />} />
-            {/* Rotas principais */}
-            <Route path="detalhamento"  element={<Dashboard />} />
-            <Route path="carregamentos" element={<ScannerPanel />} />
-            <Route path="historico"     element={<History />} />
-            <Route path="entregadores"  element={<Entregadores />} />
-            <Route path="estoque"       element={<Estoque />} />
-            <Route path="conferentes"   element={<Conferentes />} />
-            <Route path="empresas"      element={<Empresas />} />
-            <Route path="rotas"         element={<Rotas />} />
-            <Route path="financeiro"    element={<Financeiro />} />
-            <Route path="pagamentos"    element={<Pagamentos />} />
-            <Route path="relatorios"    element={<Relatorios />} />
-            <Route path="ranking"       element={<Ranking />} />
-            <Route path="meus-dados"    element={<Configuracoes />} />
-            <Route path="usuarios"      element={<Usuarios />} />
-            <Route path="logs"          element={<Logs />} />
-            <Route path="entregas"      element={<Entregas />} />
-            <Route path="despesas"      element={<Despesas />} />
+            {/* Rotas principais — cada página lazy dentro de seu próprio Suspense */}
+            <Route path="detalhamento"  element={<Suspense fallback={<ContentLoader />}><Dashboard /></Suspense>} />
+            <Route path="carregamentos" element={<Suspense fallback={<ContentLoader />}><ScannerPanel /></Suspense>} />
+            <Route path="historico"     element={<Suspense fallback={<ContentLoader />}><History /></Suspense>} />
+            <Route path="entregadores"  element={<Suspense fallback={<ContentLoader />}><Entregadores /></Suspense>} />
+            <Route path="estoque"       element={<Suspense fallback={<ContentLoader />}><Estoque /></Suspense>} />
+            <Route path="conferentes"   element={<Suspense fallback={<ContentLoader />}><Conferentes /></Suspense>} />
+            <Route path="empresas"      element={<Suspense fallback={<ContentLoader />}><Empresas /></Suspense>} />
+            <Route path="rotas"         element={<Suspense fallback={<ContentLoader />}><Rotas /></Suspense>} />
+            <Route path="financeiro"    element={<Suspense fallback={<ContentLoader />}><Financeiro /></Suspense>} />
+            <Route path="pagamentos"    element={<Suspense fallback={<ContentLoader />}><Pagamentos /></Suspense>} />
+            <Route path="relatorios"    element={<Suspense fallback={<ContentLoader />}><Relatorios /></Suspense>} />
+            <Route path="ranking"       element={<Suspense fallback={<ContentLoader />}><Ranking /></Suspense>} />
+            <Route path="meus-dados"    element={<Suspense fallback={<ContentLoader />}><Configuracoes /></Suspense>} />
+            <Route path="usuarios"      element={<Suspense fallback={<ContentLoader />}><Usuarios /></Suspense>} />
+            <Route path="logs"          element={<Suspense fallback={<ContentLoader />}><Logs /></Suspense>} />
+            <Route path="entregas"      element={<Suspense fallback={<ContentLoader />}><Entregas /></Suspense>} />
+            <Route path="despesas"      element={<Suspense fallback={<ContentLoader />}><Despesas /></Suspense>} />
           </Route>
 
           <Route path="*" element={<Navigate to="/login" replace />} />

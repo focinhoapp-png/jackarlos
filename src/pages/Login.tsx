@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Package, AlertCircle } from 'lucide-react';
 import { Button } from '@/src/components/ui/button';
@@ -10,8 +10,17 @@ export function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedUser = localStorage.getItem('jackarlos_remembered_user');
+    if (savedUser) {
+      setEmail(savedUser);
+      setRemember(true);
+    }
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,6 +38,12 @@ export function LoginPage() {
       }
 
       // Login successful
+      if (remember) {
+        localStorage.setItem('jackarlos_remembered_user', email.trim());
+      } else {
+        localStorage.removeItem('jackarlos_remembered_user');
+      }
+
       navigate('/admin/dashboard');
     } catch (err: any) {
       console.error('Login error:', err);
@@ -75,12 +90,7 @@ export function LoginPage() {
             </div>
             
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="password">Senha</Label>
-                <a href="#" className="text-xs text-primary hover:underline font-medium">
-                  Esqueci minha senha
-                </a>
-              </div>
+              <Label htmlFor="password">Senha</Label>
               <Input
                 id="password"
                 type="password"
@@ -97,7 +107,10 @@ export function LoginPage() {
               <input 
                 type="checkbox" 
                 id="remember" 
+                checked={remember}
+                onChange={(e) => setRemember(e.target.checked)}
                 className="rounded border-border bg-background text-primary focus:ring-primary h-4 w-4"
+                disabled={isLoading}
               />
               <Label htmlFor="remember" className="font-normal cursor-pointer text-muted-foreground">
                 Lembrar usuário

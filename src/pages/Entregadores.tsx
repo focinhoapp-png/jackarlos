@@ -8,9 +8,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/src/components/ui/select';
 import { supabase } from '@/src/lib/supabase';
 import { logAction } from '@/src/lib/audit';
+import { adminCreateUser, adminUpdateUser, adminDeleteUser } from '@/src/lib/adminApi';
 
-const SERVICE_ROLE_KEY = import.meta.env.VITE_SUPABASE_SERVICE_KEY as string;
-const PROJECT_URL = import.meta.env.VITE_SUPABASE_URL as string;
+// SEGURANÇA: SERVICE_ROLE_KEY foi removida do frontend.
+// Operações de Auth (criar/editar/deletar usuário) são feitas via Edge Function segura.
 
 interface Entregador {
   id: string;
@@ -25,9 +26,8 @@ interface Entregador {
   route?: string;
   status: boolean;
   photo_url?: string;
-  // joined from users
   username?: string;
-  plain_password?: string;
+  // plain_password REMOVIDO — senhas em texto puro são inseguras
 }
 
 export function Entregadores() {
@@ -40,9 +40,8 @@ export function Entregadores() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
-  const [visiblePasswordId, setVisiblePasswordId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  
+
   const [dbBases, setDbBases] = useState<{id: string, name: string}[]>([]);
   const [dbRoutes, setDbRoutes] = useState<{id: string, name: string}[]>([]);
 
@@ -53,15 +52,15 @@ export function Entregadores() {
     vehicleType: 'Moto',
     vehiclePlate: '',
     bonus: '0.00',
-    base: 'Guapimirim',
-    route: 'Guapimirim',
+    base: '',
+    route: '',
     status: 'Ativo',
     photo: '',
     username: '',
     password: ''
   });
 
-  useEffect(() => { 
+  useEffect(() => {
     fetchEntregadores();
     fetchOptions();
   }, []);
@@ -77,15 +76,13 @@ export function Entregadores() {
 
   const fetchEntregadores = async () => {
     setIsLoading(true);
-    // Join drivers with users to get username/plain_password
     const { data, error } = await supabase
       .from('drivers')
       .select(`
         *,
         users (
           id,
-          email,
-          plain_password
+          email
         )
       `)
       .order('name');
@@ -94,7 +91,6 @@ export function Entregadores() {
       setEntregadores(data.map((d: any) => ({
         ...d,
         username: d.users?.email ? d.users.email.split('@')[0] : '',
-        plain_password: d.users?.plain_password || ''
       })));
     }
     setIsLoading(false);
@@ -111,11 +107,11 @@ export function Entregadores() {
     setEditingUserId(null);
     setSaveError(null);
     setShowPassword(false);
-    setFormData({ 
-      name: '', cpf: '', phone: '', vehicleType: 'Moto', vehiclePlate: '', bonus: '0.00', 
-      base: dbBases.length > 0 ? dbBases[0].name : '', 
-      route: dbRoutes.length > 0 ? dbRoutes[0].name : '', 
-      status: 'Ativo', photo: '', username: '', password: '' 
+    setFormData({
+      name: '', cpf: '', phone: '', vehicleType: 'Moto', vehiclePlate: '', bonus: '0.00',
+      base: dbBases.length > 0 ? dbBases[0].name : '',
+      route: dbRoutes.length > 0 ? dbRoutes[0].name : '',
+      status: 'Ativo', photo: '', username: '', password: ''
     });
     setIsModalOpen(true);
   };
@@ -137,43 +133,56 @@ export function Entregadores() {
       status: ent.status ? 'Ativo' : 'Inativo',
       photo: ent.photo_url || '',
       username: ent.username || '',
-      password: ent.plain_password || ''
+      password: '' // Campo vazio ao editar — preenchido apenas se quiser alterar
     });
     setIsModalOpen(true);
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (confirm('Tem certeza que deseja excluir este entregador?')) {
-      const { error } = await supabase.from('drivers').delete().eq('id', id);
-      if (error) { alert('Erro ao excluir: ' + error.message); }
-      else {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user?.email) await logAction(user.email, 'DELETOU', 'ENTREGADOR', name);
-        fetchEntregadores();
+    if (!confirm('Tem certeza que deseja excluir este entregador?')) return;
+
+    const ent = entregadores.find(e => e.id === id);
+
+    // Se o entregador tem user_id, deleta do Auth via edge function
+    if (ent?.user_id) {
+      const { error } = await adminDeleteUser({ userId: ent.user_id });
+      if (error) {
+        alert('Erro ao excluir acesso do sistema: ' + error);
+        return;
       }
     }
+
+    // Deleta o registro de driver
+    const { error: driverErr } = await supabase.from('drivers').delete().eq('id', id);
+    if (driverErr) {
+      alert('Erro ao excluir entregador: ' + driverErr.message);
+      return;
+    }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.email) await logAction(user.email, 'DELETOU', 'ENTREGADOR', name);
+    fetchEntregadores();
   };
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxSize = 300;
-          let { width, height } = img;
-          if (width > height) { if (width > maxSize) { height = (height * maxSize) / width; width = maxSize; } }
-          else { if (height > maxSize) { width = (width * maxSize) / height; height = maxSize; } }
-          canvas.width = width; canvas.height = height;
-          canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
-          setFormData(prev => ({ ...prev, photo: canvas.toDataURL('image/jpeg', 0.8) }));
-        };
-        img.src = reader.result as string;
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxSize = 300;
+        let { width, height } = img;
+        if (width > height) { if (width > maxSize) { height = (height * maxSize) / width; width = maxSize; } }
+        else { if (height > maxSize) { width = (width * maxSize) / height; height = maxSize; } }
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
+        setFormData(prev => ({ ...prev, photo: canvas.toDataURL('image/jpeg', 0.8) }));
       };
-      reader.readAsDataURL(file);
-    }
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -202,36 +211,34 @@ export function Entregadores() {
         // ===== EDITAR =====
         await supabase.from('drivers').update(driverData).eq('id', editingId);
 
-        // Atualizar usuário vinculado (login/senha) se existir
+        // Atualizar usuário vinculado se existir
         if (editingUserId && formData.username) {
           const email = `${formData.username.trim()}@jackarlo.com`;
           const currentEnt = entregadores.find(e => e.id === editingId);
 
-          // Atualiza login se mudou
+          const updates: { email?: string; password?: string } = {};
+
+          // Atualiza email se mudou
           if (currentEnt?.username !== formData.username.trim()) {
-            await fetch(`${PROJECT_URL}/auth/v1/admin/users/${editingUserId}`, {
-              method: 'PUT',
-              headers: { 'apikey': SERVICE_ROLE_KEY, 'Authorization': `Bearer ${SERVICE_ROLE_KEY}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ email })
-            });
+            updates.email = email;
           }
 
-          // Atualiza senha se mudou
-          if (formData.password && formData.password !== currentEnt?.plain_password) {
+          // Atualiza senha se foi preenchida
+          if (formData.password) {
             if (formData.password.length < 6) throw new Error('Senha deve ter pelo menos 6 caracteres.');
-            await fetch(`${PROJECT_URL}/auth/v1/admin/users/${editingUserId}`, {
-              method: 'PUT',
-              headers: { 'apikey': SERVICE_ROLE_KEY, 'Authorization': `Bearer ${SERVICE_ROLE_KEY}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ password: formData.password })
-            });
+            updates.password = formData.password;
           }
 
-          // Atualiza public.users
+          if (Object.keys(updates).length > 0) {
+            const { error: updateErr } = await adminUpdateUser({ userId: editingUserId, ...updates });
+            if (updateErr) throw new Error(updateErr);
+          }
+
+          // Atualiza public.users (sem plain_password)
           await supabase.from('users').update({
             name: formData.name,
             email,
             avatar_url: formData.photo || null,
-            plain_password: formData.password || null
           }).eq('id', editingUserId);
         }
         await logAction(adminEmail, 'EDITOU', 'ENTREGADOR', formData.name);
@@ -244,24 +251,20 @@ export function Entregadores() {
 
         const email = `${formData.username.trim()}@jackarlo.com`;
 
-        // 1. Cria usuário no Auth
-        const createRes = await fetch(`${PROJECT_URL}/auth/v1/admin/users`, {
-          method: 'POST',
-          headers: { 'apikey': SERVICE_ROLE_KEY, 'Authorization': `Bearer ${SERVICE_ROLE_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email,
-            password: formData.password,
-            email_confirm: true,
-            user_metadata: { full_name: formData.name, name: formData.name, role: 'ENTREGADOR' }
-          })
+        // 1. Cria usuário no Auth via Edge Function (seguro)
+        const { data: createResult, error: createErr } = await adminCreateUser({
+          email,
+          password: formData.password,
+          user_metadata: { full_name: formData.name, name: formData.name, role: 'ENTREGADOR' }
         });
 
-        const createdUser = await createRes.json();
-        if (!createRes.ok || !createdUser.id) throw new Error(createdUser.msg || 'Erro ao criar acesso.');
+        if (createErr || !createResult?.user?.id) {
+          throw new Error(createErr || 'Erro ao criar acesso.');
+        }
 
-        const userId = createdUser.id;
+        const userId = createResult.user.id;
 
-        // 2. Insere em public.users
+        // 2. Insere em public.users (sem plain_password)
         await supabase.from('users').upsert({
           id: userId,
           email,
@@ -269,7 +272,6 @@ export function Entregadores() {
           role: 'ENTREGADOR',
           status: true,
           avatar_url: formData.photo || null,
-          plain_password: formData.password
         }, { onConflict: 'id' });
 
         // 3. Insere em drivers com user_id vinculado
@@ -277,11 +279,6 @@ export function Entregadores() {
         if (driverErr) throw new Error(driverErr.message);
 
         await logAction(adminEmail, 'CRIOU', 'ENTREGADOR', formData.name);
-
-        fetchEntregadores();
-        setIsModalOpen(false);
-        setIsSaving(false);
-        return;
       }
 
       fetchEntregadores();

@@ -32,11 +32,19 @@ interface FormData {
   observacao: string;
 }
 
+/** Retorna data atual no formato YYYY-MM-DD usando hora local (evita bug de fuso UTC) */
+const toLocalDateStr = (d: Date = new Date()): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 const emptyForm: FormData = {
   tipo: 'FIXA',
   descricao: '',
   valor: '',
-  data: new Date().toISOString().split('T')[0],
+  data: toLocalDateStr(),
   horario: new Date().toTimeString().slice(0, 5),
   observacao: '',
 };
@@ -107,7 +115,7 @@ export function Despesas() {
     setEditingId(null);
     setFormData({
       ...emptyForm,
-      data: new Date().toISOString().split('T')[0],
+      data: toLocalDateStr(),
       horario: new Date().toTimeString().slice(0, 5),
     });
     setFormError(null);

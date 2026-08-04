@@ -281,44 +281,43 @@ export function Dashboard() {
   const [isUserConferente, setIsUserConferente] = useState(false);
 
   useEffect(() => {
-    checkRole();
+    initializeDashboard();
   }, []);
 
-  const checkRole = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      const { data: userData } = await supabase.from('users').select('role').eq('id', user.id).single();
-      if (userData?.role === 'CONFERENTE') {
-        setIsUserConferente(true);
-        setIsLoading(false);
-        return;
-      }
-      if (userData?.role === 'ENTREGADOR') {
-        setIsUserEntregador(true);
-      }
-    }
-    fetchDashboardData();
-  };
-
-  const fetchDashboardData = async () => {
+  const initializeDashboard = async () => {
     setIsLoading(true);
+    
+    // 1. Uma única chamada para Auth e Role
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user) {
+      setIsLoading(false);
+      return;
+    }
+
+    const { data: userData } = await supabase.from('users').select('role').eq('id', user.id).single();
+    
+    if (userData?.role === 'CONFERENTE') {
+      setIsUserConferente(true);
+      setIsLoading(false);
+      return; // ConferenteDashboard handles its own fetch
+    }
+
+    let isEntregador = false;
+    let driverId = null;
+
+    if (userData?.role === 'ENTREGADOR') {
+      setIsUserEntregador(true);
+      isEntregador = true;
+      const { data: driverData } = await supabase.from('drivers').select('id').eq('user_id', user.id).single();
+      if (driverData) driverId = driverData.id;
+    }
+
+    // 2. Fetch Dados do Dashboard Admin/Entregador
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
     const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-
-    const { data: { user } } = await supabase.auth.getUser();
-    let isEntregador = false;
-    let driverId = null;
-
-    if (user) {
-      const { data: userData } = await supabase.from('users').select('role').eq('id', user.id).single();
-      if (userData?.role === 'ENTREGADOR') {
-        isEntregador = true;
-        const { data: driverData } = await supabase.from('drivers').select('id').eq('user_id', user.id).single();
-        if (driverData) driverId = driverData.id;
-      }
-    }
 
     let packagesQuery = supabase.from('packages').select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, driver_id, companies(name), drivers(name)');
     if (isEntregador && driverId) {

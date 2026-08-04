@@ -8,9 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/src/components/ui/select';
 import { supabase } from '@/src/lib/supabase';
 import { logAction } from '@/src/lib/audit';
-
-const SERVICE_ROLE_KEY = import.meta.env.VITE_SUPABASE_SERVICE_KEY as string;
-const PROJECT_URL = import.meta.env.VITE_SUPABASE_URL as string;
+import { adminCreateUser, adminUpdateUser } from '@/src/lib/adminApi';
 
 interface Collaborator {
   id: string;
@@ -192,17 +190,8 @@ export function Conferentes() {
           base_location: formData.base
         }, { onConflict: 'user_id' });
 
-        // 3. Atualiza senha se preenchida (via Admin API)
         if (formData.password) {
-          await fetch(`${PROJECT_URL}/auth/v1/admin/users/${editingId}`, {
-            method: 'PUT',
-            headers: {
-              'apikey': SERVICE_ROLE_KEY,
-              'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ password: formData.password })
-          });
+          await adminUpdateUser({ userId: editingId, password: formData.password });
         }
         
         await logAction(adminEmail, 'EDITOU', 'CONFERENTE', formData.name);
@@ -214,28 +203,18 @@ export function Conferentes() {
 
         const email = `${formData.username.trim()}@jackarlo.com`;
 
-        // 1. Cria usuário no Auth via Admin API
-        const createRes = await fetch(`${PROJECT_URL}/auth/v1/admin/users`, {
-          method: 'POST',
-          headers: {
-            'apikey': SERVICE_ROLE_KEY,
-            'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            email,
-            password: formData.password,
-            email_confirm: true,
-            user_metadata: { full_name: formData.name, name: formData.name, role: 'CONFERENTE' }
-          })
+        // 1. Cria usuário no Auth via Edge Function
+        const createdUser = await adminCreateUser({
+          email,
+          password: formData.password,
+          user_metadata: { full_name: formData.name, name: formData.name, role: 'CONFERENTE' }
         });
 
-        const createdUser = await createRes.json();
-        if (!createRes.ok || !createdUser.id) {
-          throw new Error(createdUser.msg || createdUser.message || 'Erro ao criar usuário no Auth.');
+        if (createdUser.error || !createdUser.data?.user?.id) {
+          throw new Error(createdUser.error || 'Erro ao criar usuário no Auth.');
         }
 
-        const userId = createdUser.id;
+        const userId = createdUser.data.user.id;
 
         // 2. Insere em public.users (trigger pode ter falhado silenciosamente)
         await supabase.from('users').upsert({
@@ -244,8 +223,7 @@ export function Conferentes() {
           name: formData.name,
           role: 'CONFERENTE',
           status: true,
-          avatar_url: formData.photo || null,
-          plain_password: formData.password
+          avatar_url: formData.photo || null
         }, { onConflict: 'id' });
 
         // 3. Insere em checkers

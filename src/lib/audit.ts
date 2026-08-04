@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 export async function logAction(
   adminEmail: string,
   action: 'CRIOU' | 'EDITOU' | 'DELETOU' | 'INATIVOU' | 'ATIVOU' | 'CARREGOU',
-  entityType: 'USUÁRIO' | 'ENTREGADOR' | 'CONFERENTE' | 'EMPRESA' | 'BASE' | 'ROTA' | 'CARREGAMENTO',
+  entityType: 'USUÁRIO' | 'ENTREGADOR' | 'CONFERENTE' | 'EMPRESA' | 'BASE' | 'ROTA' | 'CARREGAMENTO' | 'PAGAMENTO',
   entityName: string
 ) {
   try {

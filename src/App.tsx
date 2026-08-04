@@ -9,6 +9,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 // Carregamento imediato — o layout principal e login nunca devem ser lazy
 import { LoginPage } from './pages/Login';
 import { AdminLayout } from './layouts/AdminLayout';
+// Route guard — protege todas as áreas que exigem autenticação
+import { ProtectedRoute } from './components/ProtectedRoute';
 
 // Lazy loading — cada página só é baixada quando o usuário navegar até ela
 const Dashboard     = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -46,14 +48,31 @@ export default function App() {
     <BrowserRouter>
       <Suspense fallback={null}>
         <Routes>
+          {/* Rota pública */}
           <Route path="/login" element={<LoginPage />} />
 
-          <Route path="/admin/tv" element={<TVPanel />} />
+          {/* Painel TV — protegido, mas fora do AdminLayout */}
+          <Route path="/admin/tv" element={
+            <ProtectedRoute>
+              <TVPanel />
+            </ProtectedRoute>
+          } />
 
-          <Route path="/driver/dashboard" element={<div className="bg-background min-h-screen text-foreground p-4"><DriverPanel /></div>} />
+          {/* Painel do Entregador — protegido, layout próprio */}
+          <Route path="/driver/dashboard" element={
+            <ProtectedRoute>
+              <div className="bg-background min-h-screen text-foreground p-4">
+                <DriverPanel />
+              </div>
+            </ProtectedRoute>
+          } />
 
-          {/* Admin: Suspense só na área de conteúdo — sidebar nunca desaparece */}
-          <Route path="/admin" element={<AdminLayout />}>
+          {/* Área Admin — ProtectedRoute envolve o layout inteiro */}
+          <Route path="/admin" element={
+            <ProtectedRoute>
+              <AdminLayout />
+            </ProtectedRoute>
+          }>
             <Route index element={<Navigate to="/admin/detalhamento" replace />} />
             {/* Aliases para compatibilidade com links antigos */}
             <Route path="dashboard"  element={<Navigate to="/admin/detalhamento" replace />} />
@@ -80,6 +99,7 @@ export default function App() {
             <Route path="despesas"      element={<Suspense fallback={<ContentLoader />}><Despesas /></Suspense>} />
           </Route>
 
+          {/* Qualquer rota desconhecida → login */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </Suspense>

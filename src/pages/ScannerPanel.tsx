@@ -173,7 +173,7 @@ export function ScannerPanel() {
       const newItems: ScannedItem[] = [];
       for (let i = 0; i < diff; i++) {
         newItems.push({
-          code: `PKG-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
+          code: `PKG-${crypto.randomUUID().replace(/-/g, '').substring(0, 12).toUpperCase()}`,
           companyId: company.id,
           companyName: company.name,
           time: new Date().toLocaleTimeString(),

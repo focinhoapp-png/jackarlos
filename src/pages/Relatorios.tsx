@@ -317,7 +317,7 @@ export function Relatorios() {
                   <div className="flex-1 overflow-hidden">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Valor por Empresa</p>
                     <div className="flex gap-2 text-xs font-bold mt-1">
-                      {Object.entries(companyValue).map(([emp, val]) => (
+                      {Object.entries(companyValue).map(([emp, val]: [string, any]) => (
                         <span key={emp}>{emp.substring(0,3)}: R${val.toFixed(0)}</span>
                       ))}
                     </div>

@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from "react";
-import { Plus, Search, Edit, Trash2, CheckCircle, XCircle, Users, Camera, Eye, EyeOff, AlertCircle, KeyRound } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, CheckCircle, XCircle, Users, Camera, AlertCircle, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/src/components/ui/card';
 import { Button } from '@/src/components/ui/button';
 import { Input } from '@/src/components/ui/input';
@@ -8,18 +8,20 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/src/components/ui/select';
 import { supabase } from '@/src/lib/supabase';
 import { logAction } from '@/src/lib/audit';
+import { adminCreateUser, adminUpdateUser, adminDeleteUser } from '@/src/lib/adminApi';
 
-const SERVICE_ROLE_KEY = import.meta.env.VITE_SUPABASE_SERVICE_KEY as string;
-const PROJECT_URL = import.meta.env.VITE_SUPABASE_URL as string;
+// SEGURANÇA: SERVICE_ROLE_KEY foi removida do frontend.
+// Operações de Auth (criar/editar/deletar usuário) são feitas via Edge Function segura.
+// plain_password REMOVIDO — senhas em texto puro são inseguras (violação LGPD).
 
 interface SystemUser {
   id: string;
   name: string;
-  username: string;       // email sem o @jackarlo.com
+  username: string;
   role: 'ADMIN' | 'CONFERENTE' | 'ENTREGADOR';
   status: boolean;
   photo?: string;
-  plain_password?: string;
+  // plain_password REMOVIDO
 }
 
 export function Usuarios() {
@@ -31,14 +33,13 @@ export function Usuarios() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
-  const [visiblePasswordId, setVisiblePasswordId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [formData, setFormData] = useState({
     name: '',
     username: '',
     password: '',
-    role: 'CONFERENTE',
+    role: 'ADMIN',
     status: 'Ativo',
     photo: ''
   });
@@ -47,9 +48,10 @@ export function Usuarios() {
 
   const fetchUsers = async () => {
     setIsLoading(true);
+    // Removida a busca de plain_password
     const { data, error } = await supabase
       .from('users')
-      .select('id, name, email, role, status, avatar_url, plain_password')
+      .select('id, name, email, role, status, avatar_url')
       .order('name');
 
     if (!error && data) {
@@ -60,7 +62,6 @@ export function Usuarios() {
         role: u.role,
         status: u.status,
         photo: u.avatar_url || '',
-        plain_password: u.plain_password || ''
       })));
     }
     setIsLoading(false);
@@ -87,7 +88,7 @@ export function Usuarios() {
     setFormData({
       name: user.name,
       username: user.username,
-      password: user.plain_password || '',
+      password: '', // Campo vazio — só preencher se quiser alterar
       role: user.role,
       status: user.status ? 'Ativo' : 'Inativo',
       photo: user.photo || ''
@@ -96,46 +97,43 @@ export function Usuarios() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (confirm('Tem certeza que deseja DELETAR PERMANENTEMENTE este usuário?')) {
-      // Deleta do Auth via Admin API
-      await fetch(`${PROJECT_URL}/auth/v1/admin/users/${id}`, {
-        method: 'DELETE',
-        headers: {
-          'apikey': SERVICE_ROLE_KEY,
-          'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      // Deleta das tabelas públicas
-      await supabase.from('users').delete().eq('id', id);
-      
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user?.email) await logAction(user.email, 'DELETOU', 'USUÁRIO', name);
-      
-      fetchUsers();
+    if (!confirm('Tem certeza que deseja DELETAR PERMANENTEMENTE este usuário?')) return;
+
+    // Deleta do Auth via Edge Function (seguro)
+    const { error: authErr } = await adminDeleteUser({ userId: id });
+    if (authErr) {
+      alert('Erro ao deletar acesso: ' + authErr);
+      return;
     }
+
+    // Deleta das tabelas públicas
+    await supabase.from('users').delete().eq('id', id);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.email) await logAction(user.email, 'DELETOU', 'USUÁRIO', name);
+
+    fetchUsers();
   };
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxSize = 300;
-          let { width, height } = img;
-          if (width > height) { if (width > maxSize) { height = (height * maxSize) / width; width = maxSize; } }
-          else { if (height > maxSize) { width = (width * maxSize) / height; height = maxSize; } }
-          canvas.width = width; canvas.height = height;
-          canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
-          setFormData(prev => ({ ...prev, photo: canvas.toDataURL('image/jpeg', 0.8) }));
-        };
-        img.src = reader.result as string;
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxSize = 300;
+        let { width, height } = img;
+        if (width > height) { if (width > maxSize) { height = (height * maxSize) / width; width = maxSize; } }
+        else { if (height > maxSize) { width = (width * maxSize) / height; height = maxSize; } }
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
+        setFormData(prev => ({ ...prev, photo: canvas.toDataURL('image/jpeg', 0.8) }));
       };
-      reader.readAsDataURL(file);
-    }
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -150,52 +148,36 @@ export function Usuarios() {
       if (editingId) {
         // ===== EDITAR usuário existente =====
         const email = `${formData.username.trim()}@jackarlo.com`;
-
-        // 1. Atualiza email (login) no auth.users via Admin API se mudou
         const currentUser = users.find(u => u.id === editingId);
+
+        const authUpdates: { email?: string; password?: string } = {};
+
+        // Atualiza email se mudou
         if (currentUser && currentUser.username !== formData.username.trim()) {
-          const res = await fetch(`${PROJECT_URL}/auth/v1/admin/users/${editingId}`, {
-            method: 'PUT',
-            headers: {
-              'apikey': SERVICE_ROLE_KEY,
-              'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ email })
-          });
-          const result = await res.json();
-          if (!res.ok) throw new Error(result.msg || 'Erro ao atualizar login.');
+          authUpdates.email = email;
         }
 
-        // 2. Atualiza senha se preenchida
-        if (formData.password && formData.password !== currentUser?.plain_password) {
+        // Atualiza senha se foi preenchida
+        if (formData.password) {
           if (formData.password.length < 6) throw new Error('Senha deve ter pelo menos 6 caracteres.');
-          const res = await fetch(`${PROJECT_URL}/auth/v1/admin/users/${editingId}`, {
-            method: 'PUT',
-            headers: {
-              'apikey': SERVICE_ROLE_KEY,
-              'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ password: formData.password })
-          });
-          if (!res.ok) {
-            const result = await res.json();
-            throw new Error(result.msg || 'Erro ao atualizar senha.');
-          }
+          authUpdates.password = formData.password;
         }
 
-        // 3. Atualiza public.users
+        if (Object.keys(authUpdates).length > 0) {
+          const { error: updateErr } = await adminUpdateUser({ userId: editingId, ...authUpdates });
+          if (updateErr) throw new Error(updateErr);
+        }
+
+        // Atualiza public.users (sem plain_password)
         await supabase.from('users').update({
           name: formData.name,
           email,
           role: formData.role as any,
           status: formData.status === 'Ativo',
           avatar_url: formData.photo || null,
-          plain_password: formData.password || null
         }).eq('id', editingId);
 
-        // 4. Sincroniza as tabelas específicas
+        // Sincroniza tabelas específicas por role
         if (formData.role === 'ENTREGADOR') {
           await supabase.from('drivers').upsert({
             user_id: editingId,
@@ -208,7 +190,7 @@ export function Usuarios() {
             user_id: editingId
           }, { onConflict: 'user_id' });
         }
-        
+
         await logAction(adminEmail, 'EDITOU', 'USUÁRIO', formData.name);
 
       } else {
@@ -219,50 +201,41 @@ export function Usuarios() {
 
         const email = `${formData.username.trim()}@jackarlo.com`;
 
-        const createRes = await fetch(`${PROJECT_URL}/auth/v1/admin/users`, {
-          method: 'POST',
-          headers: {
-            'apikey': SERVICE_ROLE_KEY,
-            'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            email,
-            password: formData.password,
-            email_confirm: true,
-            user_metadata: { full_name: formData.name, name: formData.name, role: formData.role }
-          })
+        // Cria no Auth via Edge Function (seguro)
+        const { data: createResult, error: createErr } = await adminCreateUser({
+          email,
+          password: formData.password,
+          user_metadata: { full_name: formData.name, name: formData.name, role: formData.role }
         });
 
-        const createdUser = await createRes.json();
-        if (!createRes.ok || !createdUser.id) {
-          throw new Error(createdUser.msg || 'Erro ao criar usuário.');
+        if (createErr || !createResult?.user?.id) {
+          throw new Error(createErr || 'Erro ao criar usuário.');
         }
 
+        // Upsert em public.users (sem plain_password)
         await supabase.from('users').upsert({
-          id: createdUser.id,
+          id: createResult.user.id,
           email,
           name: formData.name,
           role: formData.role as any,
           status: formData.status === 'Ativo',
           avatar_url: formData.photo || null,
-          plain_password: formData.password
         }, { onConflict: 'id' });
 
-        // Sincroniza com as tabelas de perfis dependendo do cargo
+        // Sincroniza com tabelas de perfis
         if (formData.role === 'ENTREGADOR') {
           await supabase.from('drivers').upsert({
-            user_id: createdUser.id,
+            user_id: createResult.user.id,
             name: formData.name,
             status: formData.status === 'Ativo',
             photo_url: formData.photo || null
           }, { onConflict: 'user_id' });
         } else if (formData.role === 'CONFERENTE') {
           await supabase.from('checkers').upsert({
-            user_id: createdUser.id
+            user_id: createResult.user.id
           }, { onConflict: 'user_id' });
         }
-        
+
         await logAction(adminEmail, 'CRIOU', 'USUÁRIO', formData.name);
       }
 
@@ -319,19 +292,18 @@ export function Usuarios() {
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <div className="overflow-x-auto w-full"><table className="w-full text-sm text-left min-w-[800px]">
+            <div className="overflow-x-auto w-full"><table className="w-full text-sm text-left min-w-[700px]">
               <thead className="text-xs text-muted-foreground uppercase bg-muted/40 border-b border-border">
                 <tr>
                   <th className="px-6 py-4 font-medium">Usuário</th>
                   <th className="px-6 py-4 font-medium">Perfil de Acesso</th>
-                  <th className="px-6 py-4 font-medium">Senha (Admin)</th>
                   <th className="px-6 py-4 font-medium">Status</th>
                   <th className="px-6 py-4 font-medium text-right">Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {isLoading ? (
-                  <tr><td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">Carregando usuários...</td></tr>
+                  <tr><td colSpan={4} className="px-6 py-12 text-center text-muted-foreground">Carregando usuários...</td></tr>
                 ) : filteredUsers.map((user) => (
                   <tr key={user.id} className="border-b border-border hover:bg-muted/20 transition-colors">
                     <td className="px-6 py-4">
@@ -355,25 +327,6 @@ export function Usuarios() {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      {user.plain_password ? (
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-sm text-foreground">
-                            {visiblePasswordId === user.id ? user.plain_password : '••••••'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setVisiblePasswordId(visiblePasswordId === user.id ? null : user.id)}
-                            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                            title={visiblePasswordId === user.id ? 'Ocultar senha' : 'Ver senha'}
-                          >
-                            {visiblePasswordId === user.id ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="text-xs text-muted-foreground italic">Não registrada</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
                       {user.status ? (
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-success/20 text-success border border-success/20">
                           <CheckCircle className="w-3 h-3" /> Ativo
@@ -389,7 +342,7 @@ export function Usuarios() {
                         <Button variant="outline" size="icon" onClick={() => openEditModal(user)} className="h-8 w-8 hover:text-primary" title="Editar">
                           <Edit className="h-4 w-4" />
                         </Button>
-                        <Button variant="outline" size="icon" onClick={() => handleDelete(user.id, user.name)} className="h-8 w-8 hover:text-destructive hover:border-destructive/50" title="Desativar">
+                        <Button variant="outline" size="icon" onClick={() => handleDelete(user.id, user.name)} className="h-8 w-8 hover:text-destructive hover:border-destructive/50" title="Deletar">
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
@@ -397,7 +350,7 @@ export function Usuarios() {
                   </tr>
                 ))}
                 {!isLoading && filteredUsers.length === 0 && (
-                  <tr><td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">Nenhum usuário encontrado.</td></tr>
+                  <tr><td colSpan={4} className="px-6 py-12 text-center text-muted-foreground">Nenhum usuário encontrado.</td></tr>
                 )}
               </tbody>
             </table></div>
@@ -461,11 +414,11 @@ export function Usuarios() {
                 <p className="text-xs text-muted-foreground">Login completo: {formData.username || '...'}</p>
               </div>
 
-              {/* Senha com olhinho */}
+              {/* Senha */}
               <div className="space-y-2">
                 <Label htmlFor="u-password" className="flex items-center gap-2">
                   <KeyRound className="w-3.5 h-3.5" />
-                  {editingId ? 'Senha (altere para redefinir)' : 'Senha *'}
+                  {editingId ? 'Senha (deixe em branco para não alterar)' : 'Senha *'}
                 </Label>
                 <div className="relative">
                   <Input
@@ -486,9 +439,6 @@ export function Usuarios() {
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
-                {editingId && (
-                  <p className="text-xs text-muted-foreground">A senha atual está preenchida. Edite para alterar, ou mantenha para não mudar.</p>
-                )}
               </div>
 
               {/* Perfil */}

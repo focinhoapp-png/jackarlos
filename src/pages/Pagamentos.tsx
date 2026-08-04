@@ -20,8 +20,10 @@ export function Pagamentos() {
   const pagosSectionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
     fetchPagamentos();
-    fetchAtrasados();
+    fetchAtrasados(controller.signal);
+    return () => controller.abort();
   }, [currentDate]);
 
   const prevMonth = () => {
@@ -52,13 +54,13 @@ export function Pagamentos() {
     return `${y}-${m}-${d}`;
   };
 
-  /** Verifica meses anteriores (últimos 6) com pagamentos ainda pendentes */
-  const fetchAtrasados = async () => {
+  /** Verifica meses anteriores (últimos 6) com pagamentos ainda pendentes (Paralelizado com AbortSignal) */
+  const fetchAtrasados = async (signal?: AbortSignal) => {
     try {
       const hoje = new Date();
-      const atrasadosEncontrados: { month: string; drivers: string[] }[] = [];
-
-      for (let i = 1; i <= 6; i++) {
+      
+      const promises = Array.from({ length: 6 }, async (_, index) => {
+        const i = index + 1;
         const refDate = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
         const startOfMonth = new Date(refDate.getFullYear(), refDate.getMonth(), 1);
         const endOfMonth = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0, 23, 59, 59, 999);
@@ -69,7 +71,8 @@ export function Pagamentos() {
           .gte('scanned_at', startOfMonth.toISOString())
           .lte('scanned_at', endOfMonth.toISOString());
 
-        if (!pkgs || pkgs.length === 0) continue;
+        if (signal?.aborted) return null;
+        if (!pkgs || pkgs.length === 0) return null;
 
         const driversNoMes: Record<string, string> = {};
         pkgs.forEach((p: any) => {
@@ -78,7 +81,7 @@ export function Pagamentos() {
           }
         });
 
-        if (Object.keys(driversNoMes).length === 0) continue;
+        if (Object.keys(driversNoMes).length === 0) return null;
 
         const isoStart = localDateStr(startOfMonth);
         const isoEnd = localDateStr(new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0));
@@ -88,6 +91,8 @@ export function Pagamentos() {
           .select('driver_id, status')
           .eq('period_start', isoStart)
           .eq('period_end', isoEnd);
+
+        if (signal?.aborted) return null;
 
         const paidDrivers = new Set<string>();
         if (paymentsData) {
@@ -102,13 +107,17 @@ export function Pagamentos() {
 
         if (pendentesNoMes.length > 0) {
           const monthLabel = refDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-          atrasadosEncontrados.push({ month: monthLabel, drivers: pendentesNoMes });
+          return { month: monthLabel, drivers: pendentesNoMes };
         }
-      }
+        return null;
+      });
 
-      setAtrasados(atrasadosEncontrados);
+      const results = await Promise.all(promises);
+      if (!signal?.aborted) {
+        setAtrasados(results.filter(Boolean) as { month: string; drivers: string[] }[]);
+      }
     } catch (err) {
-      console.error('Erro ao buscar pagamentos atrasados:', err);
+      if (!signal?.aborted) console.error('Erro ao buscar pagamentos atrasados:', err);
     }
   };
 
@@ -152,13 +161,14 @@ export function Pagamentos() {
             company: p.companies?.name || 'Desconhecida',
             date: new Date(p.scanned_at).toLocaleDateString('pt-BR'),
             time: new Date(p.scanned_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-            value: valorRepasse
+            value: valorRepasse,
+            rawDate: p.scanned_at
           });
         });
 
-        // Ordenar pacotes dentro de cada agrupamento (mais recentes primeiro)
+        // Ordenar pacotes dentro de cada agrupamento (mais recentes primeiro) usando data ISO
         Object.values(pagtosAgrupados).forEach(group => {
-          group.packages.sort((a, b) => new Date(b.date + ' ' + b.time).getTime() - new Date(a.date + ' ' + a.time).getTime());
+          group.packages.sort((a, b) => new Date(b.rawDate).getTime() - new Date(a.rawDate).getTime());
         });
 
         // 2. Fetch driver_payments for this month

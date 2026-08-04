@@ -38,7 +38,7 @@ export function LoginPage() {
         localStorage.removeItem('jackarlos_remembered_user');
       }
 
-      navigate('/admin/dashboard');
+      navigate('/admin/detalhamento');
     } catch (err: any) {
       console.error('Login error:', err);
       setError(err.message || 'Erro ao realizar login. Verifique suas credenciais.');

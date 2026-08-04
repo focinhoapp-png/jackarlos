@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Filter, Download, Calendar } from 'lucide-react';
+import { Search, Filter, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Input } from '@/src/components/ui/input';
 import { Button } from '@/src/components/ui/button';
 import { supabase } from '@/src/lib/supabase';
@@ -16,11 +16,15 @@ interface HistoryRecord {
   observation?: string;
 }
 
+const ITEMS_PER_PAGE = 30;
+
 export function History() {
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  
   const [showFilters, setShowFilters] = useState(false);
   const [statusFilter, setStatusFilter] = useState('Todos');
   const [companyFilter, setCompanyFilter] = useState('Todas');
@@ -29,34 +33,57 @@ export function History() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [driverFilter, setDriverFilter] = useState('');
-  const [collaboratorFilter, setCollaboratorFilter] = useState('');
-  const [timeFilter, setTimeFilter] = useState('');
+  const [debouncedDriverFilter, setDebouncedDriverFilter] = useState('');
 
   const [isEntregador, setIsEntregador] = useState(false);
   const [isConferente, setIsConferente] = useState(false);
-  const [driverId, setDriverId] = useState<string | null>(null);
+
+  // Paginação
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
 
   useEffect(() => {
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (user) {
-        const { data: userData } = await supabase.from('users').select('role').eq('id', user.id).single();
-        if (userData?.role === 'ENTREGADOR') {
-          setIsEntregador(true);
-          const { data: driverData } = await supabase.from('drivers').select('id, name').eq('user_id', user.id).single();
-          if (driverData) {
-            setDriverId(driverData.id);
-            setDriverFilter(driverData.name);
-          }
-        } else if (userData?.role === 'CONFERENTE') {
-          setIsConferente(true);
-        }
-      }
-      fetchHistory();
-    });
-  }, []);
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setDebouncedDriverFilter(driverFilter);
+      setCurrentPage(1);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [searchTerm, driverFilter, statusFilter, companyFilter, startDate, endDate]);
 
-  const fetchHistory = async () => {
+  useEffect(() => {
+    loadUserAndFetch();
+  }, [currentPage, debouncedSearch, debouncedDriverFilter, statusFilter, companyFilter, startDate, endDate]);
+
+  const loadUserAndFetch = async () => {
     setIsLoading(true);
+    let role = 'ADMIN';
+    let userId = null;
+    let driverId = null;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      userId = user.id;
+      const { data: userData } = await supabase.from('users').select('role').eq('id', user.id).single();
+      if (userData?.role) role = userData.role;
+
+      if (role === 'ENTREGADOR') {
+        setIsEntregador(true);
+        const { data: driverData } = await supabase.from('drivers').select('id, name').eq('user_id', user.id).single();
+        if (driverData) {
+          driverId = driverData.id;
+          setDriverFilter(driverData.name);
+          setDebouncedDriverFilter(driverData.name);
+        }
+      } else if (role === 'CONFERENTE') {
+        setIsConferente(true);
+      }
+    }
+
+    await fetchHistory(role, userId, driverId);
+  };
+
+  const fetchHistory = async (role: string, userId: string | null, driverId: string | null) => {
     let query = supabase
       .from('packages')
       .select(`
@@ -65,28 +92,51 @@ export function History() {
         status,
         scanned_at,
         observation,
-        companies ( name ),
-        drivers ( name, id ),
-        users ( name )
-      `)
-      .order('scanned_at', { ascending: false });
+        companies!inner ( name ),
+        drivers!inner ( name, id ),
+        users!inner ( name )
+      `, { count: 'exact' });
 
-    // Se estivermos dentro do fetchHistory, ele pode não ter o driverId do state atualizado ainda (por causa da closure/async), 
-    // mas vamos pegar do session direto pra garantir se for a primeira chamada.
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      const { data: userData } = await supabase.from('users').select('role').eq('id', user.id).single();
-      if (userData?.role === 'ENTREGADOR') {
-        const { data: driverData } = await supabase.from('drivers').select('id').eq('user_id', user.id).single();
-        if (driverData) {
-          query = query.eq('driver_id', driverData.id);
-        }
-      } else if (userData?.role === 'CONFERENTE') {
-        query = query.eq('scanned_by', user.id);
-      }
+    if (role === 'ENTREGADOR' && driverId) {
+      query = query.eq('driver_id', driverId);
+    } else if (role === 'CONFERENTE' && userId) {
+      query = query.eq('scanned_by', userId);
     }
 
-    const { data, error } = await query;
+    if (debouncedSearch) {
+      query = query.ilike('barcode', `%${debouncedSearch}%`);
+    }
+
+    if (statusFilter !== 'Todos') {
+      const dbStatus = statusFilter === 'Concluído' ? 'ENTREGUE' : statusFilter === 'Devolvido' ? 'DEVOLVIDA' : 'EM_ROTA';
+      query = query.eq('status', dbStatus);
+    }
+
+    if (companyFilter !== 'Todas') {
+      query = query.eq('companies.name', companyFilter);
+    }
+
+    if (debouncedDriverFilter && role !== 'ENTREGADOR') {
+      query = query.ilike('drivers.name', `%${debouncedDriverFilter}%`);
+    }
+
+    if (startDate) {
+      query = query.gte('scanned_at', new Date(startDate).toISOString());
+    }
+
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query = query.lte('scanned_at', end.toISOString());
+    }
+
+    const from = (currentPage - 1) * ITEMS_PER_PAGE;
+    const to = from + ITEMS_PER_PAGE - 1;
+
+    query = query.order('scanned_at', { ascending: false }).range(from, to);
+
+    const { data, error, count } = await query;
+
     if (!error && data) {
       setHistory(data.map((pkg: any) => ({
         id: pkg.id,
@@ -94,76 +144,29 @@ export function History() {
         company: pkg.companies?.name || '-',
         driver: pkg.drivers?.name || '-',
         collaborator: pkg.users?.name || '-',
-        date: new Date(pkg.scanned_at).toLocaleString(),
+        date: new Date(pkg.scanned_at).toLocaleString('pt-BR'),
         rawDate: new Date(pkg.scanned_at),
         status: pkg.status === 'ENTREGUE' ? 'Concluído' : pkg.status === 'DEVOLVIDA' ? 'Devolvido' : 'Em Rota',
         observation: pkg.observation
       })));
+      setTotalCount(count || 0);
+    } else {
+      setHistory([]);
+      setTotalCount(0);
     }
+    
     setIsLoading(false);
   };
 
-  const filteredHistory = history.filter(record => {
-    const matchesSearch = 
-      record.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.driver.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.company.toLowerCase().includes(searchTerm.toLowerCase());
-      
-    let matchesTimeRange = true;
-
-    let matchesStatus = true;
-    if (statusFilter !== 'Todos') {
-      matchesStatus = record.status === statusFilter;
-    }
-
-    let matchesCompany = true;
-    if (companyFilter !== 'Todas') {
-      matchesCompany = record.company === companyFilter;
-    }
-    
-    let matchesStartDate = true;
-    if (startDate) {
-       matchesStartDate = record.rawDate >= new Date(startDate);
-    }
-    
-    let matchesEndDate = true;
-    if (endDate) {
-       const end = new Date(endDate);
-       end.setHours(23, 59, 59, 999);
-       matchesEndDate = record.rawDate <= end;
-    }
-    
-    let matchesDriver = true;
-    if (driverFilter) {
-       matchesDriver = record.driver.toLowerCase().includes(driverFilter.toLowerCase());
-    }
-
-    let matchesCollaborator = true;
-    if (collaboratorFilter) {
-       matchesCollaborator = record.collaborator.toLowerCase().includes(collaboratorFilter.toLowerCase());
-    }
-
-    let matchesTime = true;
-    if (timeFilter) {
-       const timeStr = record.rawDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-       matchesTime = timeStr.includes(timeFilter);
-    }
-
-    return matchesSearch && matchesTimeRange && matchesStatus && matchesCompany && matchesStartDate && matchesEndDate && matchesDriver && matchesCollaborator && matchesTime;
-  });
-
   const handleExport = () => {
+    // Export limited to current page data for simplicity with pagination
     if (isConferente) {
       const grouped = Object.values(
-        filteredHistory.reduce((acc, record) => {
-          const dateStr = record.rawDate.toLocaleDateString();
+        history.reduce((acc, record) => {
+          const dateStr = record.rawDate.toLocaleDateString('pt-BR');
           const key = `${record.driver}-${dateStr}`;
           if (!acc[key]) {
-            acc[key] = {
-              driver: record.driver,
-              date: dateStr,
-              count: 0,
-            };
+            acc[key] = { driver: record.driver, date: dateStr, count: 0 };
           }
           acc[key].count += 1;
           return acc;
@@ -171,36 +174,40 @@ export function History() {
       );
 
       const headers = ['Data', 'Entregador', 'Quantidade de Mercadorias'];
-      const csvContent = [
-        headers.join(','),
-        ...grouped.map(r => `"${r.date}","${r.driver}","${r.count}"`)
-      ].join('\n');
-
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'historico_conferente.csv');
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      const csvContent = [headers.join(','), ...grouped.map((r: any) => `"${r.date}","${r.driver}","${r.count}"`)].join('\n');
+      downloadCSV(csvContent, 'historico_conferente.csv');
     } else {
       const headers = ['Código', 'Data/Hora', 'Empresa', 'Entregador', 'Conferente', 'Status'];
-      const csvContent = [
-        headers.join(','),
-        ...filteredHistory.map(r => `"${r.code}","${r.date}","${r.company}","${r.driver}","${r.collaborator}","${r.status}"`)
-      ].join('\n');
-
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'historico_entregas.csv');
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      const csvContent = [headers.join(','), ...history.map(r => `"${r.code}","${r.date}","${r.company}","${r.driver}","${r.collaborator}","${r.status}"`)].join('\n');
+      downloadCSV(csvContent, 'historico_entregas.csv');
     }
   };
+
+  const downloadCSV = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE) || 1;
+
+  // Render conferente grouping
+  const conferenteGroups = isConferente ? Object.values(
+    history.reduce((acc, record) => {
+      const dateStr = record.rawDate.toLocaleDateString('pt-BR');
+      const key = `${record.driver}-${dateStr}`;
+      if (!acc[key]) {
+        acc[key] = { driver: record.driver, date: dateStr, count: 0 };
+      }
+      acc[key].count += 1;
+      return acc;
+    }, {} as Record<string, { driver: string; date: string; count: number }>)
+  ) : [];
 
   return (
     <div className="space-y-6">
@@ -208,7 +215,7 @@ export function History() {
         <h1 className="text-2xl font-bold tracking-tight">Histórico de Entregas</h1>
         <Button variant="outline" className="gap-2" onClick={handleExport}>
           <Download className="h-4 w-4" />
-          Exportar
+          Exportar Página
         </Button>
       </div>
 
@@ -219,7 +226,7 @@ export function History() {
             <div className="relative flex-1 w-full">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input 
-                placeholder="Pesquisar código, entregador ou empresa..." 
+                placeholder="Pesquisar código do pacote..." 
                 className="pl-9 bg-background w-full"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -263,7 +270,6 @@ export function History() {
                     onChange={(e) => setCompanyFilter(e.target.value)}
                   >
                     <option value="Todas">Todas</option>
-                    {/* Em um app real, as empresas viriam do DB. */}
                     <option value="Casas Bahia">Casas Bahia</option>
                     <option value="GFL Logística">GFL Logística</option>
                     <option value="Anjum">Anjum</option>
@@ -279,10 +285,6 @@ export function History() {
                   <label className="text-xs font-medium text-muted-foreground">Data Fim</label>
                   <Input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-background"/>
                 </div>
-                <div className="space-y-1.5 flex-[0.5]">
-                  <label className="text-xs font-medium text-muted-foreground">Hora</label>
-                  <Input type="time" value={timeFilter} onChange={e => setTimeFilter(e.target.value)} className="bg-background"/>
-                </div>
               </div>
               <div className="flex flex-col sm:flex-row gap-4">
                 <div className="space-y-1.5 flex-1">
@@ -295,16 +297,6 @@ export function History() {
                       disabled={isEntregador}
                     />
                 </div>
-              </div>
-              {/* Botão Buscar */}
-              <div className="flex justify-end pt-2">
-                <Button
-                  className="gap-2 px-6"
-                  onClick={() => fetchHistory()}
-                >
-                  <Search className="h-4 w-4" />
-                  Buscar
-                </Button>
               </div>
             </div>
           )}
@@ -328,29 +320,15 @@ export function History() {
                       Carregando histórico...
                     </td>
                   </tr>
-                ) : Object.values(
-                  filteredHistory.reduce((acc, record) => {
-                    const dateStr = record.rawDate.toLocaleDateString();
-                    const key = `${record.driver}-${dateStr}`;
-                    if (!acc[key]) {
-                      acc[key] = {
-                        driver: record.driver,
-                        date: dateStr,
-                        count: 0,
-                      };
-                    }
-                    acc[key].count += 1;
-                    return acc;
-                  }, {} as Record<string, { driver: string; date: string; count: number }>)
-                ).map((group, i) => (
+                ) : conferenteGroups.map((group: any, i) => (
                   <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
                     <td className="px-6 py-4 text-muted-foreground">{group.date}</td>
                     <td className="px-6 py-4 font-medium">{group.driver}</td>
-                    <td className="px-6 py-4 font-bold text-primary">{group.count} pacotes</td>
+                    <td className="px-6 py-4 font-bold text-primary">{group.count} pacotes (na página atual)</td>
                   </tr>
                 ))}
                 
-                {!isLoading && filteredHistory.length === 0 && (
+                {!isLoading && conferenteGroups.length === 0 && (
                   <tr>
                     <td colSpan={3} className="px-6 py-12 text-center text-muted-foreground">
                       Nenhum registro encontrado.
@@ -378,7 +356,7 @@ export function History() {
                       Carregando histórico...
                     </td>
                   </tr>
-                ) : filteredHistory.map((record, i) => (
+                ) : history.map((record, i) => (
                   <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
                     <td className="px-6 py-4 font-mono font-medium">{record.code}</td>
                     <td className="px-6 py-4 text-muted-foreground">{record.date}</td>
@@ -404,7 +382,7 @@ export function History() {
                   </tr>
                 ))}
                 
-                {!isLoading && filteredHistory.length === 0 && (
+                {!isLoading && history.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-6 py-12 text-center text-muted-foreground">
                       Nenhum registro encontrado.
@@ -417,20 +395,34 @@ export function History() {
         </div>
         
         {/* Pagination Footer */}
-        <div className="p-4 border-t border-border bg-muted/20 flex items-center justify-between text-sm text-muted-foreground">
-          <div>Mostrando {isConferente 
-            ? Object.keys(filteredHistory.reduce((acc, record) => {
-                const dateStr = record.rawDate.toLocaleDateString();
-                const key = `${record.driver}-${dateStr}`;
-                acc[key] = true;
-                return acc;
-              }, {} as Record<string, boolean>)).length 
-            : filteredHistory.length} resultados</div>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled>Anterior</Button>
-            <Button variant="outline" size="sm">Próxima</Button>
+        {totalCount > 0 && (
+          <div className="flex items-center justify-between px-6 py-4 border-t border-border bg-muted/10">
+            <div className="text-sm text-muted-foreground">
+              Mostrando <span className="font-medium text-foreground">{((currentPage - 1) * ITEMS_PER_PAGE) + 1}</span> a <span className="font-medium text-foreground">{Math.min(currentPage * ITEMS_PER_PAGE, totalCount)}</span> de <span className="font-medium text-foreground">{totalCount}</span> registros
+            </div>
+            <div className="flex items-center gap-2">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                disabled={currentPage === 1 || isLoading}
+              >
+                <ChevronLeft className="h-4 w-4 mr-1" /> Anterior
+              </Button>
+              <div className="text-sm font-medium px-2">
+                Página {currentPage} de {totalPages}
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                disabled={currentPage === totalPages || isLoading}
+              >
+                Próxima <ChevronRight className="h-4 w-4 ml-1" />
+              </Button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

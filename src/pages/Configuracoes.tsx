@@ -10,26 +10,7 @@ import { supabase } from '@/src/lib/supabase';
 import Cropper from 'react-easy-crop';
 import getCroppedImg from '@/src/lib/cropImage';
 
-export function ConfigPage({ title, icon: Icon }: { title: string, icon: any }) {
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
-      </div>
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Icon className="h-5 w-5 text-primary" />
-            Painel de {title}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">Módulo em desenvolvimento.</p>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
+
 
 export function Configuracoes() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -221,11 +202,6 @@ export function Configuracoes() {
         });
         if (pwError) throw pwError;
 
-        // Sincroniza plain_password na tabela public.users para refletir na tela de Usuários
-        await supabase
-          .from('users')
-          .update({ plain_password: formData.newPassword })
-          .eq('id', userId);
       }
 
       setMessage({ type: 'success', text: 'Informações atualizadas com sucesso!' });

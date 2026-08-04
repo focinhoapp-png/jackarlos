@@ -493,7 +493,7 @@ export function Dashboard() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
         <Card className="col-span-1 lg:col-span-4">
           <CardHeader>
-            <CardTitle>Entregas por Hora (Hoje)</CardTitle>
+            <CardTitle>Entregas por Hora Hoje</CardTitle>
           </CardHeader>
           <CardContent className="pl-2">
             <div className="h-[300px] w-full">
@@ -522,7 +522,7 @@ export function Dashboard() {
 
         <Card className="col-span-1 lg:col-span-3">
           <CardHeader>
-            <CardTitle>Entregas por Empresa (Total)</CardTitle>
+            <CardTitle>Entregas por Empresa Total</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] w-full">
@@ -533,7 +533,7 @@ export function Dashboard() {
                     <XAxis type="number" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
                     <YAxis dataKey="name" type="category" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
                     <Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '8px' }} />
-                    <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={24} />
+                    <Bar dataKey="value" name="entregas" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={24} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -546,7 +546,7 @@ export function Dashboard() {
         {!isUserEntregador && (
           <Card className="col-span-1 lg:col-span-7">
             <CardHeader>
-              <CardTitle>Top Entregadores (Geral)</CardTitle>
+              <CardTitle>Top Entregadores Geral</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-6">

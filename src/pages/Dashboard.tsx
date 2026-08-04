@@ -561,7 +561,10 @@ export function Dashboard() {
                         <p className="text-xs text-muted-foreground mt-1">{driver.deliveries} entregas carregadas</p>
                       </div>
                     </div>
-                    <div className="text-sm font-medium text-success">R$ {driver.amount.toFixed(2).replace('.', ',')} (Valor Gerado)</div>
+                    <div className="text-right shrink-0 ml-2">
+                      <div className="text-sm font-bold text-success">R$ {driver.amount.toFixed(2).replace('.', ',')}</div>
+                      <div className="text-[10px] text-success/80">(Valor Gerado)</div>
+                    </div>
                   </div>
                 )) : (
                   <div className="text-center text-muted-foreground">Sem entregadores ativos com registros</div>

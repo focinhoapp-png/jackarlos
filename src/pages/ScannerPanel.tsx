@@ -370,7 +370,11 @@ export function ScannerPanel() {
   }, [driver, companies]);
 
   if (!driver) {
-    const availableDrivers = allDrivers.filter(d => (d.base_location || 'Guapimirim') === selectedBase && !queue.find(q => q.id === d.id));
+    const availableDrivers = allDrivers.filter(d => 
+      (d.base_location || 'Guapimirim') === selectedBase && 
+      !queue.find(q => q.id === d.id) &&
+      !activeDeliveries.find(ad => ad.id === d.id)
+    );
 
     return (
       <div className="flex flex-col space-y-8 pb-8">

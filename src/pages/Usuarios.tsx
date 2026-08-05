@@ -52,6 +52,7 @@ export function Usuarios() {
     const { data, error } = await supabase
       .from('users')
       .select('id, name, email, role, status, avatar_url')
+      .eq('role', 'ADMIN')
       .order('name');
 
     if (!error && data) {
@@ -271,7 +272,7 @@ export function Usuarios() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <h1 className="text-2xl font-bold tracking-tight">Usuários do Sistema</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Administradores do Sistema</h1>
         <Button onClick={openNewModal} className="gap-2 shadow-lg shadow-primary/20">
           <Plus className="h-4 w-4" />
           Novo Admin
@@ -303,7 +304,7 @@ export function Usuarios() {
               </thead>
               <tbody>
                 {isLoading ? (
-                  <tr><td colSpan={4} className="px-6 py-12 text-center text-muted-foreground">Carregando usuários...</td></tr>
+                  <tr><td colSpan={4} className="px-6 py-12 text-center text-muted-foreground">Carregando administradores...</td></tr>
                 ) : filteredUsers.map((user) => (
                   <tr key={user.id} className="border-b border-border hover:bg-muted/20 transition-colors">
                     <td className="px-6 py-4">
@@ -350,7 +351,7 @@ export function Usuarios() {
                   </tr>
                 ))}
                 {!isLoading && filteredUsers.length === 0 && (
-                  <tr><td colSpan={4} className="px-6 py-12 text-center text-muted-foreground">Nenhum usuário encontrado.</td></tr>
+                  <tr><td colSpan={4} className="px-6 py-12 text-center text-muted-foreground">Nenhum administrador encontrado.</td></tr>
                 )}
               </tbody>
             </table></div>
@@ -363,7 +364,7 @@ export function Usuarios() {
         <DialogContent className="sm:max-w-[520px] border-border bg-card">
           <DialogHeader>
             <DialogTitle className="text-xl flex items-center gap-2">
-              {editingId ? 'Editar Usuário' : 'Novo Usuário'}
+              {editingId ? 'Editar Administrador' : 'Novo Administrador'}
             </DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSave} className="space-y-4 py-4">
@@ -444,15 +445,13 @@ export function Usuarios() {
               {/* Perfil */}
               <div className="space-y-2">
                 <Label>Perfil de Acesso *</Label>
-                <Select value={formData.role} onValueChange={(val) => setFormData({ ...formData, role: val })} disabled={!editingId}>
+                <Select value={formData.role} onValueChange={(val) => setFormData({ ...formData, role: val })} disabled>
                   <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="ADMIN">Administrador</SelectItem>
-                    <SelectItem value="CONFERENTE">Conferente</SelectItem>
-                    <SelectItem value="ENTREGADOR">Entregador</SelectItem>
                   </SelectContent>
                 </Select>
-                {!editingId && <p className="text-xs text-muted-foreground">Na aba Usuários só é possível criar novos Administradores.</p>}
+                <p className="text-xs text-muted-foreground">Na aba Administradores só é possível gerenciar Administradores.</p>
               </div>
 
               {/* Status */}
@@ -471,7 +470,7 @@ export function Usuarios() {
             <DialogFooter className="pt-4 mt-6 border-t border-border">
               <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)}>Cancelar</Button>
               <Button type="submit" disabled={isSaving}>
-                {isSaving ? 'Salvando...' : editingId ? 'Salvar Alterações' : 'Criar Usuário'}
+                {isSaving ? 'Salvando...' : editingId ? 'Salvar Alterações' : 'Criar Administrador'}
               </Button>
             </DialogFooter>
           </form>

@@ -51,7 +51,7 @@ const navItems = [
 
 const configItems = [
   { icon: IdCard, label: 'Meus Dados', path: '/admin/meus-dados' },
-  { icon: Users, label: 'Usuários', path: '/admin/usuarios' },
+  { icon: Users, label: 'Administradores', path: '/admin/usuarios' },
   { icon: ClipboardList, label: 'Logs', path: '/admin/logs' },
 ];
 

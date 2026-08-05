@@ -320,6 +320,18 @@ export function ScannerPanel() {
     if (!confirmed) return;
     setFinalizing(true);
     try {
+      const userRes = await supabase.auth.getUser();
+      const userId = userRes.data.user?.id;
+      let userName = 'Desconhecido';
+      let userEmail = 'Desconhecido';
+      if (userId) {
+        const { data: ud } = await supabase.from('users').select('name, email').eq('id', userId).single();
+        if (ud) {
+          userName = ud.name || 'Desconhecido';
+          userEmail = ud.email || 'Desconhecido';
+        }
+      }
+
       const barcodes = selectedActiveDelivery.scannedItems.map((i: any) => i.code);
       const { error } = await supabase
         .from('packages')
@@ -328,6 +340,19 @@ export function ScannerPanel() {
       if (error) {
         alert('Erro ao finalizar entregas: ' + error.message);
       } else {
+        let carregouName = 'Desconhecido';
+        if (selectedActiveDelivery.scannedBy) {
+           const { data: scanUser } = await supabase.from('users').select('name').eq('id', selectedActiveDelivery.scannedBy).single();
+           if (scanUser && scanUser.name) carregouName = scanUser.name;
+        }
+
+        await logAction(
+          userEmail !== 'Desconhecido' ? userEmail : userName,
+          'FINALIZOU',
+          'CARREGAMENTO',
+          `Entregas de ${selectedActiveDelivery.driverName} finalizadas. Carregado por: ${carregouName} | Finalizado por: ${userName}`
+        );
+
         await loadActiveDeliveries();
         setSelectedActiveDelivery(null);
       }
@@ -577,7 +602,6 @@ export function ScannerPanel() {
                                 <span className="text-sm font-medium">{companyName}</span>
                               </div>
                               <div className="flex items-center gap-2">
-                                {(currentUserRole === 'ADMIN' || selectedActiveDelivery?.scannedBy === currentUserId) ? (
                                   <>
                                     <button
                                       disabled={isLoading || count <= 0}
@@ -599,9 +623,6 @@ export function ScannerPanel() {
                                       <ChevronUp className="h-4 w-4" />
                                     </button>
                                   </>
-                                ) : (
-                                  <span className="text-sm font-bold tabular-nums w-8 text-center">{count}</span>
-                                )}
                               </div>
                             </div>
                           );
@@ -615,10 +636,7 @@ export function ScannerPanel() {
             <DialogFooter className="flex items-center justify-between sm:justify-between w-full gap-2">
               <Button variant="outline" onClick={() => setSelectedActiveDelivery(null)}>Fechar</Button>
               {(() => {
-                const isAdmin = currentUserRole === 'ADMIN';
-                const isOwner = selectedActiveDelivery?.scannedBy === currentUserId;
-                const canFinalize = isAdmin || isOwner;
-                return canFinalize ? (
+                return (
                   <Button
                     onClick={handleFinalizeDelivery}
                     disabled={finalizing || !selectedActiveDelivery?.scannedItems?.length}
@@ -627,10 +645,6 @@ export function ScannerPanel() {
                     <CheckCircle2 className="h-4 w-4" />
                     {finalizing ? 'Finalizando...' : 'Finalizar Entregas'}
                   </Button>
-                ) : (
-                  <span className="text-xs text-muted-foreground italic">
-                    Apenas o conferente responsável ou admin pode finalizar
-                  </span>
                 );
               })()}
             </DialogFooter>

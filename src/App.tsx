@@ -46,7 +46,7 @@ function ContentLoader() {
 export default function App() {
   return (
     <BrowserRouter>
-      <Suspense fallback={null}>
+      <Suspense fallback={<ContentLoader />}>
         <Routes>
           {/* Rota pública */}
           <Route path="/login" element={<LoginPage />} />

@@ -196,7 +196,7 @@ export function AdminLayout() {
 
         <div className="p-4 border-t border-border shrink-0">
           <div 
-            className="flex items-center gap-3 px-3 py-3 min-h-[44px] rounded-md hover:bg-accent transition-colors cursor-pointer"
+            className="group flex items-center gap-3 px-3 py-3 min-h-[44px] rounded-md hover:bg-destructive/10 transition-colors cursor-pointer"
             onClick={async () => {
               await supabase.auth.signOut();
               navigate('/login');
@@ -215,7 +215,10 @@ export function AdminLayout() {
                 {currentUser?.role === 'ADMIN' ? 'Administrador' : currentUser?.role === 'CONFERENTE' ? 'Conferente' : currentUser?.role === 'ENTREGADOR' ? 'Entregador' : 'Usuário'}
               </p>
             </div>
-            <LogOut className="h-5 w-5 md:h-4 md:w-4 text-muted-foreground" />
+            <div className="flex flex-col items-center justify-center text-destructive shrink-0 transition-colors px-1">
+              <LogOut className="h-5 w-5 md:h-5 md:w-5" />
+              <span className="text-[10px] font-bold uppercase mt-0.5">Sair</span>
+            </div>
           </div>
         </div>
       </aside>

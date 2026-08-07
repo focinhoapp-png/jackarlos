@@ -491,9 +491,22 @@ export function ScannerPanel() {
                           >
                             Remover
                           </Button>
-                          <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md ${isFirst ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
-                            {isFirst ? 'Carregando' : 'Aguardando'}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <Button 
+                              variant="default" 
+                              size="sm" 
+                              className="h-7 text-xs px-3"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDriver(d);
+                              }}
+                            >
+                              Carregar
+                            </Button>
+                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md ${isFirst ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
+                              {isFirst ? 'Carregando' : 'Aguardando'}
+                            </span>
+                          </div>
                         </div>
                       </CardContent>
                     </Card>

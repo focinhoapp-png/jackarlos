@@ -28,9 +28,27 @@ function ConferenteDashboard() {
     driversRankToday: [],
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState(new Date());
 
   useEffect(() => {
     fetchConferenteData();
+
+    // Realtime: re-fetch sempre que packages mudar (insert/update/delete)
+    const channel = supabase
+      .channel('conferente-packages-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'packages' }, () => {
+        fetchConferenteData();
+      })
+      .subscribe();
+
+    // Fallback: refresh a cada 60 segundos
+    const interval = setInterval(() => fetchConferenteData(), 60_000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(interval);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchConferenteData = async () => {
@@ -106,6 +124,7 @@ function ConferenteDashboard() {
     }
 
     setIsLoading(false);
+    setLastUpdated(new Date());
   };
 
   if (isLoading) {
@@ -122,8 +141,12 @@ function ConferenteDashboard() {
             Visão do Conferente
           </p>
         </div>
-        <div className="text-sm text-muted-foreground">
-          Última atualização: {new Date().toLocaleTimeString()}
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            Ao vivo
+          </span>
+          · Última atualização: {lastUpdated.toLocaleTimeString('pt-BR')}
         </div>
       </div>
 
@@ -280,8 +303,31 @@ export function Dashboard() {
   const [isUserEntregador, setIsUserEntregador] = useState(false);
   const [isUserConferente, setIsUserConferente] = useState(false);
 
+  const [lastUpdated, setLastUpdated] = useState(new Date());
+
   useEffect(() => {
     initializeDashboard();
+
+    // Realtime: re-fetch sempre que packages mudar (insert/update/delete)
+    const channel = supabase
+      .channel('admin-packages-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'packages' }, () => {
+        setLastUpdated(new Date());
+        initializeDashboard();
+      })
+      .subscribe();
+
+    // Fallback: refresh a cada 60 segundos
+    const interval = setInterval(() => {
+      setLastUpdated(new Date());
+      initializeDashboard();
+    }, 60_000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(interval);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const initializeDashboard = async () => {
@@ -393,8 +439,12 @@ export function Dashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">Detalhamento</h1>
-        <div className="text-sm text-muted-foreground">
-          Última atualização: {new Date().toLocaleTimeString()}
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            Ao vivo
+          </span>
+          · Última atualização: {lastUpdated.toLocaleTimeString('pt-BR')}
         </div>
       </div>
 

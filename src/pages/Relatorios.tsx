@@ -30,15 +30,16 @@ export function Relatorios() {
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
 
   const [displayedResults, setDisplayedResults] = useState<DeliveryRecord[]>([]);
-  const [allDrivers, setAllDrivers] = useState<string[]>([]);
+  const [allDrivers, setAllDrivers] = useState<{ id: string; name: string }[]>([]);
   const [allCompanies, setAllCompanies] = useState<string[]>([]);
   const [isEntregador, setIsEntregador] = useState(false);
   const [driverId, setDriverId] = useState<string | null>(null);
+  const [filterDriverId, setFilterDriverId] = useState<string | null>(null);
   const [isCheckingRole, setIsCheckingRole] = useState(true);
 
   useEffect(() => {
-    supabase.from('drivers').select('name').then(res => {
-      if (res.data) setAllDrivers(res.data.map(d => d.name));
+    supabase.from('drivers').select('id, name').order('name').then(res => {
+      if (res.data) setAllDrivers(res.data.map(d => ({ id: d.id, name: d.name })));
     });
     supabase.from('companies').select('name').then(res => {
       if (res.data) setAllCompanies(res.data.map(c => c.name));
@@ -52,6 +53,7 @@ export function Relatorios() {
           const { data: driverData } = await supabase.from('drivers').select('id, name, base_location').eq('user_id', user.id).single();
           if (driverData) {
             setDriverId(driverData.id);
+            setFilterDriverId(driverData.id);
             setFilterDriver(driverData.name);
             if (driverData.base_location) {
               setFilterBase(driverData.base_location);
@@ -66,26 +68,39 @@ export function Relatorios() {
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSearching(true);
+
+    // Ajuste de fuso: usamos início e fim do dia em horário local convertido para ISO
+    const start = new Date(`${startDate}T00:00:00`);
+    const end = new Date(`${endDate}T23:59:59`);
     
     // Fetch directly using filters
     let query = supabase
       .from('packages')
-      .select('id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name)')
-      .gte('scanned_at', `${startDate}T00:00:00.000Z`)
-      .lte('scanned_at', `${endDate}T23:59:59.999Z`);
+      .select('id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
+      .gte('scanned_at', start.toISOString())
+      .lte('scanned_at', end.toISOString());
       
     if (filterBase !== 'todas') {
       query = query.eq('base_location', filterBase);
     }
-    
-    if (isEntregador && driverId) {
-      query = query.eq('driver_id', driverId);
+
+    // Filtra por driver_id diretamente na query (igual ao Estoque)
+    const effectiveDriverId = isEntregador ? driverId : filterDriverId;
+    if (effectiveDriverId) {
+      query = query.eq('driver_id', effectiveDriverId);
+    }
+
+    if (filterCompany !== 'todas') {
+      const companyData = await supabase.from('companies').select('id').eq('name', filterCompany).single();
+      if (companyData.data?.id) {
+        query = query.eq('company_id', companyData.data.id);
+      }
     }
 
     const { data, error } = await query;
 
     if (!error && data) {
-      let filtered = data.map((p: any) => ({
+      const mapped = data.map((p: any) => ({
         id: p.id,
         driver: p.drivers?.name || 'Desconhecido',
         company: p.companies?.name || 'Desconhecida',
@@ -96,14 +111,7 @@ export function Relatorios() {
         base: p.base_location || 'Guapimirim'
       }));
 
-      if (filterCompany !== 'todas') {
-        filtered = filtered.filter(f => f.company === filterCompany);
-      }
-      if (filterDriver !== 'todos') {
-        filtered = filtered.filter(f => f.driver === filterDriver);
-      }
-
-      setDisplayedResults(filtered);
+      setDisplayedResults(mapped);
       setShowResults(true);
     } else {
       console.error(error);
@@ -241,14 +249,26 @@ export function Relatorios() {
                 
                 <div className="space-y-2">
                 <Label>Entregador</Label>
-                <Select value={filterDriver} onValueChange={setFilterDriver} disabled={isEntregador || isCheckingRole}>
+                <Select
+                  value={filterDriver}
+                  onValueChange={(name) => {
+                    setFilterDriver(name);
+                    if (name === 'todos') {
+                      setFilterDriverId(null);
+                    } else {
+                      const found = allDrivers.find(d => d.name === name);
+                      setFilterDriverId(found?.id ?? null);
+                    }
+                  }}
+                  disabled={isEntregador || isCheckingRole}
+                >
                   <SelectTrigger className="bg-white">
                     <SelectValue placeholder={isCheckingRole ? "Carregando..." : "Selecione..."} />
                   </SelectTrigger>
                   <SelectContent>
                     {!isEntregador && <SelectItem value="todos">Todos os Entregadores</SelectItem>}
                     {allDrivers.map(d => (
-                      <SelectItem key={d} value={d}>{d}</SelectItem>
+                      <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

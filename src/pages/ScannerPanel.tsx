@@ -31,6 +31,7 @@ interface ScannedItem {
   time: string;
   status: 'success' | 'error';
   value: number;
+  bonus?: number; // Bônus por empresa deste entregador (definido no momento do scan)
 }
 
 export function ScannerPanel() {
@@ -54,6 +55,8 @@ export function ScannerPanel() {
   const [driver, setDriver] = useState<DriverInfo | null>(null);
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([]);
   const [companyCounts, setCompanyCounts] = useState<Record<string, number>>({});
+  // Bônus por empresa do entregador selecionado: { [company_id]: bonus_amount }
+  const [driverBonusMap, setDriverBonusMap] = useState<Record<string, number>>({});
   
   const [lastScanStatus, setLastScanStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
@@ -154,6 +157,23 @@ export function ScannerPanel() {
   const addToQueue = (newDriver: DriverInfo) => setQueue(prev => [...prev, newDriver]);
   const removeFromQueue = (driverId: string) => setQueue(prev => prev.filter(d => d.id !== driverId));
 
+  /** Carrega bônus por empresa do entregador e define como driver ativo */
+  const handleSelectDriver = async (d: DriverInfo) => {
+    const { data: bonusData } = await supabase
+      .from('driver_company_bonuses')
+      .select('company_id, bonus_amount')
+      .eq('driver_id', d.id);
+
+    const bonusMap: Record<string, number> = {};
+    if (bonusData) {
+      bonusData.forEach((b: any) => {
+        bonusMap[b.company_id] = Number(b.bonus_amount);
+      });
+    }
+    setDriverBonusMap(bonusMap);
+    setDriver(d);
+  };
+
   const handlePackageScan = () => {
     // Scanner simulado desativado — contagem manual ativa
   };
@@ -171,6 +191,8 @@ export function ScannerPanel() {
     if (newCount > currentCount) {
       const diff = newCount - currentCount;
       const newItems: ScannedItem[] = [];
+      // Usa bônus específico da empresa para este entregador (ou 0 se não configurado)
+      const bonusForCompany = driverBonusMap[company.id] ?? 0;
       for (let i = 0; i < diff; i++) {
         newItems.push({
           code: `PKG-${crypto.randomUUID().replace(/-/g, '').substring(0, 12).toUpperCase()}`,
@@ -178,7 +200,8 @@ export function ScannerPanel() {
           companyName: company.name,
           time: new Date().toLocaleTimeString(),
           status: 'success',
-          value: company.value_per_delivery
+          value: company.value_per_delivery,
+          bonus: bonusForCompany
         });
       }
       setScannedItems(prev => [...newItems, ...prev]);
@@ -227,7 +250,8 @@ export function ScannerPanel() {
         scanned_by: userId,
         status: 'EM_ROTA',
         delivery_value_snapshot: item.value || 0,
-        driver_bonus_snapshot: driver.bonus_per_delivery || 0,
+        // Usa bônus por empresa se disponível no item, senão busca do mapa atual
+        driver_bonus_snapshot: item.bonus ?? driverBonusMap[item.companyId] ?? 0,
         base_location: driver.base_location || 'Guapimirim'
       }));
 
@@ -248,6 +272,7 @@ export function ScannerPanel() {
 
         removeFromQueue(driver.id);
         setDriver(null);
+        setDriverBonusMap({});
         setScannedItems([]);
         const resetCounts: Record<string, number> = {};
         companies.forEach(c => { resetCounts[c.name] = 0; });
@@ -460,7 +485,7 @@ export function ScannerPanel() {
                   >
                     <Card 
                       className={`relative overflow-hidden cursor-pointer transition-all hover:shadow-md ${isFirst ? 'border-primary shadow-[0_0_15px_rgba(59,130,246,0.15)] bg-primary/5' : 'bg-card border-border hover:border-primary/50'}`}
-                      onClick={() => setDriver(d)}
+                      onClick={() => handleSelectDriver(d)}
                     >
                       {isFirst && (
                         <div className="absolute top-0 left-0 w-full h-1 bg-primary"></div>
@@ -498,7 +523,7 @@ export function ScannerPanel() {
                               className="h-7 text-xs px-3"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setDriver(d);
+                                handleSelectDriver(d);
                               }}
                             >
                               Carregar

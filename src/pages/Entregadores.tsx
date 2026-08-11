@@ -44,6 +44,10 @@ export function Entregadores() {
 
   const [dbBases, setDbBases] = useState<{id: string, name: string}[]>([]);
   const [dbRoutes, setDbRoutes] = useState<{id: string, name: string}[]>([]);
+  const [dbCompanies, setDbCompanies] = useState<{id: string, name: string, color_hex: string, logo_url?: string}[]>([]);
+
+  // Bônus por empresa: { [company_id]: valor_string }
+  const [companyBonuses, setCompanyBonuses] = useState<Record<string, string>>({});
 
   const [formData, setFormData] = useState({
     name: '',
@@ -51,7 +55,6 @@ export function Entregadores() {
     phone: '',
     vehicleType: 'Moto',
     vehiclePlate: '',
-    bonus: '0.00',
     base: '',
     route: '',
     status: 'Ativo',
@@ -66,12 +69,14 @@ export function Entregadores() {
   }, []);
 
   const fetchOptions = async () => {
-    const [basesRes, routesRes] = await Promise.all([
+    const [basesRes, routesRes, companiesRes] = await Promise.all([
       supabase.from('bases').select('id, name').eq('status', true).order('name'),
-      supabase.from('routes').select('id, name').eq('status', true).order('name')
+      supabase.from('routes').select('id, name').eq('status', true).order('name'),
+      supabase.from('companies').select('id, name, color_hex, logo_url').eq('status', true).order('name')
     ]);
     if (basesRes.data) setDbBases(basesRes.data);
     if (routesRes.data) setDbRoutes(routesRes.data);
+    if (companiesRes.data) setDbCompanies(companiesRes.data);
   };
 
   const fetchEntregadores = async () => {
@@ -107,8 +112,9 @@ export function Entregadores() {
     setEditingUserId(null);
     setSaveError(null);
     setShowPassword(false);
+    setCompanyBonuses({});
     setFormData({
-      name: '', cpf: '', phone: '', vehicleType: 'Moto', vehiclePlate: '', bonus: '0.00',
+      name: '', cpf: '', phone: '', vehicleType: 'Moto', vehiclePlate: '',
       base: dbBases.length > 0 ? dbBases[0].name : '',
       route: dbRoutes.length > 0 ? dbRoutes[0].name : '',
       status: 'Ativo', photo: '', username: '', password: ''
@@ -116,7 +122,7 @@ export function Entregadores() {
     setIsModalOpen(true);
   };
 
-  const openEditModal = (ent: Entregador) => {
+  const openEditModal = async (ent: Entregador) => {
     setEditingId(ent.id);
     setEditingUserId(ent.user_id || null);
     setSaveError(null);
@@ -127,7 +133,6 @@ export function Entregadores() {
       phone: ent.phone || '',
       vehicleType: ent.vehicle_type || 'Moto',
       vehiclePlate: ent.vehicle_plate || '',
-      bonus: ent.bonus_per_delivery ? ent.bonus_per_delivery.toString() : '0.00',
       base: ent.base_location || (dbBases.length > 0 ? dbBases[0].name : ''),
       route: ent.route || (dbRoutes.length > 0 ? dbRoutes[0].name : ''),
       status: ent.status ? 'Ativo' : 'Inativo',
@@ -135,6 +140,21 @@ export function Entregadores() {
       username: ent.username || '',
       password: '' // Campo vazio ao editar — preenchido apenas se quiser alterar
     });
+
+    // Carregar bônus por empresa existentes
+    const { data: bonusData } = await supabase
+      .from('driver_company_bonuses')
+      .select('company_id, bonus_amount')
+      .eq('driver_id', ent.id);
+
+    const bonusMap: Record<string, string> = {};
+    if (bonusData) {
+      bonusData.forEach((b: any) => {
+        bonusMap[b.company_id] = b.bonus_amount.toString();
+      });
+    }
+    setCompanyBonuses(bonusMap);
+
     setIsModalOpen(true);
   };
 
@@ -185,6 +205,24 @@ export function Entregadores() {
     reader.readAsDataURL(file);
   };
 
+  const saveCompanyBonuses = async (driverId: string) => {
+    // Deleta todos os bônus anteriores deste entregador
+    await supabase.from('driver_company_bonuses').delete().eq('driver_id', driverId);
+
+    // Insere os novos bônus com valor > 0
+    const toInsert = (Object.entries(companyBonuses) as [string, string][])
+      .filter(([, val]) => parseFloat(val) > 0)
+      .map(([company_id, val]) => ({
+        driver_id: driverId,
+        company_id,
+        bonus_amount: parseFloat(val)
+      }));
+
+    if (toInsert.length > 0) {
+      await supabase.from('driver_company_bonuses').insert(toInsert);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
@@ -200,7 +238,6 @@ export function Entregadores() {
         phone: formData.phone || null,
         vehicle_type: formData.vehicleType,
         vehicle_plate: formData.vehiclePlate || null,
-        bonus_per_delivery: parseFloat(formData.bonus) || 0,
         base_location: formData.base,
         route: formData.route,
         status: formData.status === 'Ativo',
@@ -210,6 +247,9 @@ export function Entregadores() {
       if (editingId) {
         // ===== EDITAR =====
         await supabase.from('drivers').update(driverData).eq('id', editingId);
+
+        // Salvar bônus por empresa
+        await saveCompanyBonuses(editingId);
 
         // Atualizar usuário vinculado se existir
         if (editingUserId && formData.username) {
@@ -275,8 +315,17 @@ export function Entregadores() {
         }, { onConflict: 'id' });
 
         // 3. Insere em drivers com user_id vinculado
-        const { error: driverErr } = await supabase.from('drivers').insert([{ ...driverData, user_id: userId }]);
+        const { data: newDriver, error: driverErr } = await supabase
+          .from('drivers')
+          .insert([{ ...driverData, user_id: userId }])
+          .select('id')
+          .single();
         if (driverErr) throw new Error(driverErr.message);
+
+        // 4. Salvar bônus por empresa
+        if (newDriver?.id) {
+          await saveCompanyBonuses(newDriver.id);
+        }
 
         await logAction(adminEmail, 'CRIOU', 'ENTREGADOR', formData.name);
       }
@@ -501,9 +550,56 @@ export function Entregadores() {
                   <Label htmlFor="ent-plate">Placa do Veículo</Label>
                   <Input id="ent-plate" value={formData.vehiclePlate} onChange={(e) => setFormData({ ...formData, vehiclePlate: e.target.value })} className="bg-background uppercase" placeholder="ABC-1234" />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="ent-bonus">Bônus por Entrega (R$)</Label>
-                  <Input id="ent-bonus" type="number" step="0.01" min="0" value={formData.bonus} onChange={(e) => setFormData({ ...formData, bonus: e.target.value })} className="bg-background" placeholder="0.00" />
+                {/* Bônus por Empresa */}
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Bônus por Empresa</Label>
+                  {dbCompanies.length === 0 ? (
+                    <p className="text-xs text-muted-foreground italic">Nenhuma empresa cadastrada.</p>
+                  ) : (
+                    <div className="rounded-lg border border-border overflow-hidden">
+                      {dbCompanies.map((company, idx) => (
+                        <div
+                          key={company.id}
+                          className={`flex items-center gap-3 px-3 py-2.5 ${
+                            idx !== dbCompanies.length - 1 ? 'border-b border-border' : ''
+                          } hover:bg-muted/20 transition-colors`}
+                        >
+                          {/* Cor/logo da empresa */}
+                          <div
+                            className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center overflow-hidden border border-border/40"
+                            style={{ backgroundColor: company.color_hex || '#cccccc' }}
+                          >
+                            {company.logo_url ? (
+                              <img src={company.logo_url} alt={company.name} className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-[10px] font-bold text-white">
+                                {company.name.charAt(0).toUpperCase()}
+                              </span>
+                            )}
+                          </div>
+                          <span className="flex-1 text-sm font-medium text-foreground">{company.name}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-muted-foreground">R$</span>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              placeholder="0,00"
+                              value={companyBonuses[company.id] || ''}
+                              onChange={(e) =>
+                                setCompanyBonuses(prev => ({
+                                  ...prev,
+                                  [company.id]: e.target.value
+                                }))
+                              }
+                              className="bg-background w-24 h-8 text-sm text-right"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">Deixe vazio ou R$0,00 para empresas que não pagam bônus.</p>
                 </div>
                 <div className="space-y-2">
                   <Label>Base *</Label>

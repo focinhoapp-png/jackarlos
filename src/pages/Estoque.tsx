@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { PackageSearch, AlertCircle, CheckCircle, Package, Calendar, Trash2, RotateCcw, ShieldAlert, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/src/components/ui/card';
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 
 export function Estoque() {
   const [estoque, setEstoque] = useState<any[]>([]);
@@ -46,7 +46,7 @@ export function Estoque() {
 
   const fetchEstoque = async () => {
     setIsLoading(true);
-    const { data, error } = await supabase
+    const { data, error } = await fetchAllPaginated(() => supabase
       .from('packages')
       .select(`
         id,
@@ -60,7 +60,8 @@ export function Estoque() {
         users ( name )
       `)
       .in('status', ['ENTREGUE', 'DEVOLVIDA'])
-      .order('scanned_at', { ascending: false }).limit(999999);
+      .order('scanned_at', { ascending: false })
+    );
 
     if (error) {
       console.error('Error fetching estoque:', error);
@@ -277,7 +278,7 @@ export function Estoque() {
           {estoque.map((load) => {
             const entregues = load.items.filter((i: any) => i.finalStatus === 'Entregue').length;
             const devolvidas = load.items.filter((i: any) => i.finalStatus === 'Devolvida').length;
-            const isExpanded = expandedGroups[load.id] !== false; // expanded by default
+            const isExpanded = expandedGroups[load.id] === true; // collapsed by default
 
             return (
               <Card key={load.id} className="bg-card border-border shadow-sm overflow-hidden">

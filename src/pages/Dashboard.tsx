@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Package, DollarSign, Building2, Users, CheckCircle, ShieldCheck, Truck, CalendarDays, BarChart2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/src/components/ui/card';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 
 // ─── Painel do Conferente ─────────────────────────────────────────────────────
 interface ConferenteMetrics {
@@ -61,12 +61,12 @@ function ConferenteDashboard() {
     const startOfWeek  = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-    const { data: pkgs } = await supabase
+    const { data: pkgs } = await fetchAllPaginated(() => supabase
       .from('packages')
       .select('id, scanned_at, driver_id, drivers(name), companies(name)')
       .eq('scanned_by', user.id)
       .gte('scanned_at', startOfMonth)
-      .limit(999999);
+    );
 
     if (pkgs) {
       let scannedToday = 0;
@@ -366,13 +366,16 @@ export function Dashboard() {
     const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-    let packagesQuery = supabase.from('packages').select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, driver_id, companies(name), drivers(name)').limit(999999);
-    if (isEntregador && driverId) {
-      packagesQuery = packagesQuery.eq('driver_id', driverId);
-    }
+    const packagesQueryFactory = () => {
+      let q = supabase.from('packages').select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, driver_id, companies(name), drivers(name)');
+      if (isEntregador && driverId) {
+        q = q.eq('driver_id', driverId);
+      }
+      return q;
+    };
 
     const [packagesRes, driversRes, companiesRes] = await Promise.all([
-      packagesQuery,
+      fetchAllPaginated(packagesQueryFactory),
       supabase.from('drivers').select('id', { count: 'exact' }).eq('status', true),
       supabase.from('companies').select('id', { count: 'exact' }).eq('status', true)
     ]);

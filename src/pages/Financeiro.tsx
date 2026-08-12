@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { DollarSign, TrendingUp, TrendingDown, Building2, Users, Package, Calendar, Search } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/src/components/ui/card';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 
 /** Formata Date como YYYY-MM-DD em hora local (evita bug UTC) */
 const toLocalISO = (d: Date) => {
@@ -48,11 +48,12 @@ export function Financeiro() {
     const startDate = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
     const endDate   = new Date(ey, em - 1, ed, 23, 59, 59, 999);
     
-    const { data: pkgs, error } = await supabase
+    const { data: pkgs, error } = await fetchAllPaginated(() => supabase
       .from('packages')
       .select('id, driver_id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, companies(name), drivers(name)')
       .gte('scanned_at', startDate.toISOString())
-      .lte('scanned_at', endDate.toISOString()).limit(999999);
+      .lte('scanned_at', endDate.toISOString())
+    );
 
     if (!error && pkgs) {
       let faturamento = 0;

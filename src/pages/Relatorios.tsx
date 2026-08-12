@@ -6,7 +6,7 @@ import { Label } from '@/src/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/src/components/ui/select';
 import { Input } from '@/src/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/src/components/ui/dialog';
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 
 interface DeliveryRecord {
   id: string;
@@ -73,31 +73,56 @@ export function Relatorios() {
     const start = new Date(`${startDate}T00:00:00`);
     const end = new Date(`${endDate}T23:59:59`);
     
-    // Fetch directly using filters
-    let query = supabase
-      .from('packages')
-      .select('id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
-      .gte('scanned_at', start.toISOString())
-      .lte('scanned_at', end.toISOString()).limit(999999);
-      
-    if (filterBase !== 'todas') {
-      query = query.eq('base_location', filterBase);
-    }
+    const queryFactory = async () => {
+      let query = supabase
+        .from('packages')
+        .select('id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
+        .gte('scanned_at', start.toISOString())
+        .lte('scanned_at', end.toISOString());
+        
+      if (filterBase !== 'todas') {
+        query = query.eq('base_location', filterBase);
+      }
 
-    // Filtra por driver_id diretamente na query (igual ao Estoque)
-    const effectiveDriverId = isEntregador ? driverId : filterDriverId;
-    if (effectiveDriverId) {
-      query = query.eq('driver_id', effectiveDriverId);
-    }
+      // Filtra por driver_id diretamente na query (igual ao Estoque)
+      const effectiveDriverId = isEntregador ? driverId : filterDriverId;
+      if (effectiveDriverId) {
+        query = query.eq('driver_id', effectiveDriverId);
+      }
 
+      if (filterCompany !== 'todas') {
+        const companyData = await supabase.from('companies').select('id').eq('name', filterCompany).single();
+        if (companyData.data?.id) {
+          query = query.eq('company_id', companyData.data.id);
+        }
+      }
+      return query;
+    };
+    
+    // We need to unwrap the async factory, but fetchAllPaginated takes a sync factory.
+    // Wait, we can just resolve the company data beforehand!
+    let compId = null;
     if (filterCompany !== 'todas') {
       const companyData = await supabase.from('companies').select('id').eq('name', filterCompany).single();
-      if (companyData.data?.id) {
-        query = query.eq('company_id', companyData.data.id);
-      }
+      compId = companyData.data?.id;
     }
 
-    const { data, error } = await query;
+    const finalQueryFactory = () => {
+      let query = supabase
+        .from('packages')
+        .select('id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
+        .gte('scanned_at', start.toISOString())
+        .lte('scanned_at', end.toISOString());
+        
+      if (filterBase !== 'todas') query = query.eq('base_location', filterBase);
+      const effectiveDriverId = isEntregador ? driverId : filterDriverId;
+      if (effectiveDriverId) query = query.eq('driver_id', effectiveDriverId);
+      if (compId) query = query.eq('company_id', compId);
+      
+      return query;
+    };
+
+    const { data, error } = await fetchAllPaginated(finalQueryFactory);
 
     if (!error && data) {
       const mapped = data.map((p: any) => ({

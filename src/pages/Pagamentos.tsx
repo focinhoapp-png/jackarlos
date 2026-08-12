@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { DollarSign, ChevronLeft, ChevronRight, CheckCircle2, Clock, Eye, Package, Building2, Calendar, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/src/components/ui/card';
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 import { Button } from '@/src/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/src/components/ui/dialog';
 import { logAction } from '@/src/lib/audit';
@@ -65,11 +65,12 @@ export function Pagamentos() {
         const startOfMonth = new Date(refDate.getFullYear(), refDate.getMonth(), 1);
         const endOfMonth = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0, 23, 59, 59, 999);
 
-        const { data: pkgs } = await supabase
+        const { data: pkgs } = await fetchAllPaginated(() => supabase
           .from('packages')
           .select('driver_id, drivers(name)')
           .gte('scanned_at', startOfMonth.toISOString())
-          .lte('scanned_at', endOfMonth.toISOString()).limit(999999);
+          .lte('scanned_at', endOfMonth.toISOString())
+        );
 
         if (signal?.aborted) return null;
         if (!pkgs || pkgs.length === 0) return null;
@@ -128,11 +129,23 @@ export function Pagamentos() {
       const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
 
       // 1. Fetch pacotes no mês atual
-      const { data: pkgs, error } = await supabase
+      const { data: pkgs, error } = await fetchAllPaginated(() => supabase
         .from('packages')
-        .select('id, barcode, driver_id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, drivers(name), companies(name)')
+        .select(`
+          id,
+          barcode,
+          scanned_at,
+          delivery_value_snapshot,
+          driver_bonus_snapshot,
+          driver_id,
+          company_id,
+          status,
+          drivers (name),
+          companies (name)
+        `)
         .gte('scanned_at', startOfMonth.toISOString())
-        .lte('scanned_at', endOfMonth.toISOString()).limit(999999);
+        .lte('scanned_at', endOfMonth.toISOString())
+      );
 
       if (error) throw error;
 

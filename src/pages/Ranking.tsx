@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Trophy, Medal, Star, TrendingUp, Package, Building2, Calendar, RotateCcw, CheckCircle2, XCircle, ChevronDown } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/src/components/ui/card';
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 
 type PeriodType = 'Semanal' | 'Mensal' | 'Anual' | 'Personalizado';
 
@@ -43,7 +43,7 @@ export function Ranking() {
     try {
       const { start, end } = buildDateRange();
 
-      const { data: pkgs, error } = await supabase
+      const { data: pkgs, error } = await fetchAllPaginated(() => supabase
         .from('packages')
         .select(`
           delivery_value_snapshot,
@@ -55,7 +55,8 @@ export function Ranking() {
           companies (id, name, logo_url, color_hex)
         `)
         .gte('scanned_at', start.toISOString())
-        .lte('scanned_at', end.toISOString()).limit(999999);
+        .lte('scanned_at', end.toISOString())
+      );
 
       if (error) throw error;
 

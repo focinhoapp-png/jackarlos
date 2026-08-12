@@ -330,16 +330,23 @@ export function ScannerPanel() {
   const handleAdjustCompanyCount = async (driverId: string, companyName: string, direction: 'down' | 'up') => {
     setAdjustingCompany(companyName);
     try {
+      const companyId = companies.find(c => c.name === companyName)?.id;
+      if (!companyId) {
+        setAdjustingCompany(null);
+        return;
+      }
+
       if (direction === 'down') {
         // Busca 1 pacote EM_ROTA desta empresa/entregador e marca como DEVOLVIDA
         const { data: pkgs } = await supabase
           .from('packages')
-          .select('barcode, companies(name)')
+          .select('barcode')
           .eq('driver_id', driverId)
+          .eq('company_id', companyId)
           .eq('status', 'EM_ROTA')
-          .limit(200);
+          .limit(1);
 
-        const target = pkgs?.find((p: any) => p.companies?.name === companyName);
+        const target = pkgs?.[0];
         if (!target) { setAdjustingCompany(null); return; }
 
         const { error } = await supabase
@@ -352,12 +359,13 @@ export function ScannerPanel() {
         // Busca 1 pacote DEVOLVIDA desta empresa/entregador e reverte para EM_ROTA
         const { data: pkgs } = await supabase
           .from('packages')
-          .select('barcode, companies(name)')
+          .select('barcode')
           .eq('driver_id', driverId)
+          .eq('company_id', companyId)
           .eq('status', 'DEVOLVIDA')
-          .limit(200);
+          .limit(1);
 
-        const target = pkgs?.find((p: any) => p.companies?.name === companyName);
+        const target = pkgs?.[0];
         if (!target) { setAdjustingCompany(null); return; }
 
         const { error } = await supabase

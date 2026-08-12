@@ -58,14 +58,38 @@ export function TVPanel() {
   }, []);
 
   const loadActiveDeliveries = async () => {
-    const { data, error } = await supabase
-      .from('packages')
-      .select('driver_id, barcode, company_id, scanned_at, drivers(name, vehicle_type, vehicle_plate), companies(name)')
-      .eq('status', 'EM_ROTA')
-      .limit(999999);
+    let allData: any[] = [];
+    let from = 0;
+    const step = 1000;
+    let hasMore = true;
+    let fetchError = null;
+
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from('packages')
+        .select('driver_id, barcode, company_id, scanned_at, drivers(name, vehicle_type, vehicle_plate), companies(name)')
+        .eq('status', 'EM_ROTA')
+        .range(from, from + step - 1);
+        
+      if (error) {
+        fetchError = error;
+        break;
+      }
       
-    if (!error && data) {
-      const grouped = data.reduce((acc: any, pkg: any) => {
+      if (data && data.length > 0) {
+        allData = allData.concat(data);
+        if (data.length < step) {
+          hasMore = false;
+        } else {
+          from += step;
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+      
+    if (!fetchError && allData) {
+      const grouped = allData.reduce((acc: any, pkg: any) => {
         if (!acc[pkg.driver_id]) {
           acc[pkg.driver_id] = {
             id: pkg.driver_id,

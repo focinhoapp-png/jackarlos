@@ -90,14 +90,38 @@ export function ScannerPanel() {
   };
 
   const loadActiveDeliveries = async () => {
-    const { data, error } = await supabase
-      .from('packages')
-      .select('driver_id, barcode, company_id, scanned_at, scanned_by, drivers(name, vehicle_type, vehicle_plate), companies(name)')
-      .eq('status', 'EM_ROTA')
-      .limit(999999);
+    let allData: any[] = [];
+    let from = 0;
+    const step = 1000;
+    let hasMore = true;
+    let fetchError = null;
+
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from('packages')
+        .select('driver_id, barcode, company_id, scanned_at, scanned_by, drivers(name, vehicle_type, vehicle_plate), companies(name)')
+        .eq('status', 'EM_ROTA')
+        .range(from, from + step - 1);
+        
+      if (error) {
+        fetchError = error;
+        break;
+      }
       
-    if (!error && data) {
-      const grouped = data.reduce((acc: any, pkg: any) => {
+      if (data && data.length > 0) {
+        allData = allData.concat(data);
+        if (data.length < step) {
+          hasMore = false;
+        } else {
+          from += step;
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+
+    if (!fetchError && allData) {
+      const grouped = allData.reduce((acc: any, pkg: any) => {
         if (!acc[pkg.driver_id]) {
           acc[pkg.driver_id] = {
             id: pkg.driver_id,
@@ -256,22 +280,30 @@ export function ScannerPanel() {
         base_location: driver.base_location || 'Guapimirim'
       }));
 
-      const chunkSize = 500;
+      const chunkSize = 100;
       let hasError = false;
       let errorMessage = '';
 
       for (let i = 0; i < insertPayload.length; i += chunkSize) {
-        const chunk = insertPayload.slice(i, i + chunkSize);
-        const { error } = await supabase.from('packages').insert(chunk);
-        if (error) {
+        try {
+          const chunk = insertPayload.slice(i, i + chunkSize);
+          const { error } = await supabase.from('packages').insert(chunk);
+          if (error) {
+            hasError = true;
+            errorMessage = error.message;
+            break;
+          }
+          // Pequeno delay para evitar rate limit
+          await new Promise(resolve => setTimeout(resolve, 150));
+        } catch (err: any) {
           hasError = true;
-          errorMessage = error.message;
+          errorMessage = err.message || 'Erro de rede ou timeout';
           break;
         }
       }
 
       if (hasError) {
-        alert("Erro ao salvar pacotes: " + errorMessage);
+        alert("Erro ao salvar pacotes (apenas uma parte foi salva). Erro: " + errorMessage);
       } else {
         // Registrar log de carregamento
         if (userData) {
@@ -372,26 +404,33 @@ export function ScannerPanel() {
 
       const barcodes = selectedActiveDelivery.scannedItems.map((i: any) => i.code);
       
-      const chunkSize = 500;
+      const chunkSize = 100;
       let hasError = false;
       let errorMessage = '';
 
       for (let i = 0; i < barcodes.length; i += chunkSize) {
-        const chunk = barcodes.slice(i, i + chunkSize);
-        const { error } = await supabase
-          .from('packages')
-          .update({ status: 'ENTREGUE' })
-          .in('barcode', chunk);
-        
-        if (error) {
+        try {
+          const chunk = barcodes.slice(i, i + chunkSize);
+          const { error } = await supabase
+            .from('packages')
+            .update({ status: 'ENTREGUE' })
+            .in('barcode', chunk);
+          
+          if (error) {
+            hasError = true;
+            errorMessage = error.message;
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 150));
+        } catch (err: any) {
           hasError = true;
-          errorMessage = error.message;
+          errorMessage = err.message || 'Erro de conexão';
           break;
         }
       }
 
       if (hasError) {
-        alert('Erro ao finalizar entregas: ' + errorMessage);
+        alert('Erro ao finalizar entregas (algumas podem não ter sido finalizadas). Erro: ' + errorMessage);
       } else {
         let carregouName = 'Desconhecido';
         if (selectedActiveDelivery.scannedBy) {

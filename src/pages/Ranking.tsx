@@ -55,7 +55,7 @@ export function Ranking() {
           companies (id, name, logo_url, color_hex)
         `)
         .gte('scanned_at', start.toISOString())
-        .lte('scanned_at', end.toISOString());
+        .lte('scanned_at', end.toISOString()).limit(999999);
 
       if (error) throw error;
 

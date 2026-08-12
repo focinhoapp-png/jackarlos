@@ -65,7 +65,8 @@ function ConferenteDashboard() {
       .from('packages')
       .select('id, scanned_at, driver_id, drivers(name), companies(name)')
       .eq('scanned_by', user.id)
-      .gte('scanned_at', startOfMonth);
+      .gte('scanned_at', startOfMonth)
+      .limit(999999);
 
     if (pkgs) {
       let scannedToday = 0;
@@ -365,7 +366,7 @@ export function Dashboard() {
     const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-    let packagesQuery = supabase.from('packages').select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, driver_id, companies(name), drivers(name)');
+    let packagesQuery = supabase.from('packages').select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, driver_id, companies(name), drivers(name)').limit(999999);
     if (isEntregador && driverId) {
       packagesQuery = packagesQuery.eq('driver_id', driverId);
     }

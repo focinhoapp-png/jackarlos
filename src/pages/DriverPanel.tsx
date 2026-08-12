@@ -66,7 +66,7 @@ export function DriverPanel() {
     const { data: pkgs } = await supabase
       .from('packages')
       .select('barcode, status, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, companies(id, name)')
-      .eq('driver_id', driverId);
+      .eq('driver_id', driverId).limit(999999);
 
     if (pkgs) {
       const active: PackageItem[] = [];

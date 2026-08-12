@@ -69,7 +69,7 @@ export function Pagamentos() {
           .from('packages')
           .select('driver_id, drivers(name)')
           .gte('scanned_at', startOfMonth.toISOString())
-          .lte('scanned_at', endOfMonth.toISOString());
+          .lte('scanned_at', endOfMonth.toISOString()).limit(999999);
 
         if (signal?.aborted) return null;
         if (!pkgs || pkgs.length === 0) return null;
@@ -132,7 +132,7 @@ export function Pagamentos() {
         .from('packages')
         .select('id, barcode, driver_id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, drivers(name), companies(name)')
         .gte('scanned_at', startOfMonth.toISOString())
-        .lte('scanned_at', endOfMonth.toISOString());
+        .lte('scanned_at', endOfMonth.toISOString()).limit(999999);
 
       if (error) throw error;
 

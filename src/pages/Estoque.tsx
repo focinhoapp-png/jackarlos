@@ -60,7 +60,7 @@ export function Estoque() {
         users ( name )
       `)
       .in('status', ['ENTREGUE', 'DEVOLVIDA'])
-      .order('scanned_at', { ascending: false });
+      .order('scanned_at', { ascending: false }).limit(999999);
 
     if (error) {
       console.error('Error fetching estoque:', error);

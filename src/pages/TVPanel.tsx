@@ -61,7 +61,8 @@ export function TVPanel() {
     const { data, error } = await supabase
       .from('packages')
       .select('driver_id, barcode, company_id, scanned_at, drivers(name, vehicle_type, vehicle_plate), companies(name)')
-      .eq('status', 'EM_ROTA');
+      .eq('status', 'EM_ROTA')
+      .limit(999999);
       
     if (!error && data) {
       const grouped = data.reduce((acc: any, pkg: any) => {

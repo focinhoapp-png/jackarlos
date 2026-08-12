@@ -95,7 +95,7 @@ export function History() {
         companies!inner ( name ),
         drivers!inner ( name, id ),
         users!inner ( name )
-      `, { count: 'exact' });
+      `, { count: 'exact' }).limit(999999);
 
     if (role === 'ENTREGADOR' && driverId) {
       query = query.eq('driver_id', driverId);

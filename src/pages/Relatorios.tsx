@@ -78,7 +78,7 @@ export function Relatorios() {
       .from('packages')
       .select('id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
       .gte('scanned_at', start.toISOString())
-      .lte('scanned_at', end.toISOString());
+      .lte('scanned_at', end.toISOString()).limit(999999);
       
     if (filterBase !== 'todas') {
       query = query.eq('base_location', filterBase);

@@ -52,7 +52,7 @@ export function Financeiro() {
       .from('packages')
       .select('id, driver_id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, companies(name), drivers(name)')
       .gte('scanned_at', startDate.toISOString())
-      .lte('scanned_at', endDate.toISOString());
+      .lte('scanned_at', endDate.toISOString()).limit(999999);
 
     if (!error && pkgs) {
       let faturamento = 0;

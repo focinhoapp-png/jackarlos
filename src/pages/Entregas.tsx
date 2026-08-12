@@ -29,7 +29,7 @@ export function Entregas() {
         .select('id, barcode, company_id, scanned_at, companies(name, color_hex, logo_url)')
         .eq('driver_id', driverData.id)
         .eq('status', 'EM_ROTA')
-        .order('scanned_at', { ascending: false });
+        .order('scanned_at', { ascending: false }).limit(999999);
         
       if (!error && data) {
         const grouped = data.reduce((acc: any, pkg: any) => {

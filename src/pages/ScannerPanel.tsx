@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, CheckCircle2, Truck, GripVertical, Plus, Building2, Package, ChevronUp, ChevronDown } from 'lucide-react';
+import { User, CheckCircle2, Truck, GripVertical, Plus, Building2, Package, ChevronUp, ChevronDown, Search } from 'lucide-react';
 import { Card, CardContent } from '@/src/components/ui/card';
 import { Button } from '@/src/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/src/components/ui/dialog';
@@ -39,6 +39,7 @@ export function ScannerPanel() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [bases, setBases] = useState<string[]>([]);
   const [activeDeliveries, setActiveDeliveries] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedActiveDelivery, setSelectedActiveDelivery] = useState<any | null>(null);
   const [adjustingCompany, setAdjustingCompany] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
@@ -622,8 +623,23 @@ export function ScannerPanel() {
           <div className="pt-6 border-t border-border">
             <h2 className="text-xl font-bold tracking-tight mb-1">Em Rota (Saiu para Entrega)</h2>
             <p className="text-muted-foreground mb-4">Entregadores que estão atualmente realizando entregas.</p>
+            
+            <div className="relative mb-6">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Search className="h-5 w-5 text-muted-foreground" />
+              </div>
+              <Input 
+                placeholder="Pesquisar entregador por nome..." 
+                className="pl-10 max-w-md bg-background"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {activeDeliveries.map((load) => (
+              {activeDeliveries
+                .filter(load => (load.driverName || '').toLowerCase().includes(searchQuery.toLowerCase()))
+                .map((load) => (
                 <Card 
                   key={load.id} 
                   className="bg-card border-border cursor-pointer hover:border-primary/50 transition-colors"

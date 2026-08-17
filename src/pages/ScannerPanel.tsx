@@ -227,6 +227,15 @@ export function ScannerPanel() {
     }));
   };
 
+  const handleCancelLoading = () => {
+    setDriver(null);
+    setDriverBonusMap({});
+    setScannedItems([]);
+    const resetCounts: Record<string, number> = {};
+    companies.forEach(c => { resetCounts[c.name] = 0; });
+    setCompanyCounts(resetCounts);
+  };
+
   const handleFinishLoading = async () => {
     if (driver && scannedItems.length > 0) {
       const userRes = await supabase.auth.getUser();
@@ -742,20 +751,37 @@ export function ScannerPanel() {
                 })()}
               </div>
             )}
-            <DialogFooter className="flex items-center justify-between sm:justify-between w-full gap-2">
-              <Button variant="outline" onClick={() => setSelectedActiveDelivery(null)}>Fechar</Button>
-              {(() => {
-                return (
-                  <Button
-                    onClick={handleFinalizeDelivery}
-                    disabled={finalizing || !selectedActiveDelivery?.scannedItems?.length}
-                    className="bg-green-600 hover:bg-green-700 text-white font-bold gap-2"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    {finalizing ? 'Finalizando...' : 'Finalizar Entregas'}
-                  </Button>
-                );
-              })()}
+            <DialogFooter className="flex flex-col sm:flex-row items-center justify-between w-full gap-3 pt-4 border-t border-border mt-4">
+              <Button variant="outline" onClick={() => setSelectedActiveDelivery(null)} className="w-full sm:w-auto">Fechar</Button>
+              <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                <Button 
+                  variant="secondary"
+                  className="w-full sm:w-auto gap-2 bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200"
+                  onClick={() => {
+                    const realDriver = allDrivers.find(d => d.id === selectedActiveDelivery.id) || {
+                      id: selectedActiveDelivery.id,
+                      name: selectedActiveDelivery.driverName,
+                      vehicle_type: selectedActiveDelivery.vehicle,
+                      vehicle_plate: selectedActiveDelivery.plate,
+                      base_location: 'Desconhecida',
+                      bonus_per_delivery: 0
+                    };
+                    setSelectedActiveDelivery(null);
+                    handleSelectDriver(realDriver as any);
+                  }}
+                >
+                  <Plus className="h-4 w-4" />
+                  Adicionar Entregas
+                </Button>
+                <Button
+                  onClick={handleFinalizeDelivery}
+                  disabled={finalizing || !selectedActiveDelivery?.scannedItems?.length}
+                  className="w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white font-bold gap-2"
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  {finalizing ? 'Finalizando...' : 'Finalizar Entregas'}
+                </Button>
+              </div>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -783,7 +809,7 @@ export function ScannerPanel() {
           </div>
         </div>
         <div className="text-right">
-          <div className="text-sm text-muted-foreground mb-1">Total Carregado</div>
+          <div className="text-sm text-muted-foreground mb-1">Entregas adicionadas</div>
           <div className="text-4xl font-black text-primary">{totalScanned}</div>
         </div>
       </div>
@@ -791,7 +817,7 @@ export function ScannerPanel() {
       <div className="flex flex-1 gap-6 overflow-hidden">
         
         {/* Companies Summary */}
-        <div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar">
+        <div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar flex-1 max-w-lg">
           {Object.entries(companyCounts).map(([companyName, count]) => {
             const company = companies.find(c => c.name === companyName);
             return (
@@ -826,12 +852,70 @@ export function ScannerPanel() {
             );
           })}
 
-          <div className="mt-auto pt-4">
-            <Button className="w-full h-14 text-lg font-bold" onClick={handleFinishLoading} disabled={scannedItems.length === 0}>
+          <div className="mt-auto pt-4 flex gap-3">
+            <Button variant="outline" className="h-14 px-6 text-base font-semibold" onClick={handleCancelLoading}>
+              Voltar
+            </Button>
+            <Button className="flex-1 h-14 text-lg font-bold" onClick={handleFinishLoading} disabled={scannedItems.length === 0}>
               Finalizar Carregamento
             </Button>
           </div>
         </div>
+
+        {/* Já Carregados (View Only) */}
+        {(() => {
+          const alreadyLoaded = activeDeliveries.find(ad => ad.id === driver.id);
+          if (!alreadyLoaded || !alreadyLoaded.scannedItems || alreadyLoaded.scannedItems.length === 0) return null;
+          
+          const summary: Record<string, number> = {};
+          alreadyLoaded.scannedItems.forEach((item: any) => {
+            const name = item.company || 'Desconhecida';
+            summary[name] = (summary[name] || 0) + 1;
+          });
+          const entries = Object.entries(summary).sort((a, b) => b[1] - a[1]);
+          const totalAlreadyLoaded = entries.reduce((s, [, v]) => s + v, 0);
+          
+          return (
+            <div className="flex-1 hidden md:flex flex-col bg-muted/10 border border-border rounded-xl p-6 shadow-inner relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+                <Truck className="w-48 h-48" />
+              </div>
+              <div className="relative z-10 flex flex-col h-full">
+                <div className="flex items-center justify-between mb-6 shrink-0">
+                  <h3 className="text-xl font-bold flex items-center gap-2 text-muted-foreground">
+                    <Truck className="h-5 w-5" />
+                    Carga em Rota (Já Carregada)
+                  </h3>
+                  <span className="bg-primary/10 text-primary font-bold px-3 py-1 rounded-full text-sm">
+                    {totalAlreadyLoaded} pacotes
+                  </span>
+                </div>
+                <div className="space-y-3 overflow-y-auto custom-scrollbar pr-2 pb-4">
+                  {entries.map(([comp, count]) => {
+                    const company = companies.find(c => c.name === comp);
+                    return (
+                      <div key={comp} className="flex items-center justify-between p-4 rounded-xl bg-card border border-border shadow-sm opacity-80">
+                        <div className="flex items-center gap-3">
+                          {company?.logo_url ? (
+                            <div className="h-8 w-8 rounded-lg border border-border bg-white flex items-center justify-center overflow-hidden shrink-0 p-0.5">
+                              <img src={company.logo_url} alt={comp} className="max-w-full max-h-full object-contain" />
+                            </div>
+                          ) : (
+                            <div className="h-8 w-8 rounded-lg border border-border bg-muted flex items-center justify-center shrink-0">
+                              <Building2 className="h-4 w-4 text-muted-foreground" />
+                            </div>
+                          )}
+                          <span className="font-medium text-muted-foreground">{comp}</span>
+                        </div>
+                        <span className="font-bold text-2xl tabular-nums text-muted-foreground">{count}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
       </div>
     </div>

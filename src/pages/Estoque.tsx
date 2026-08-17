@@ -46,6 +46,9 @@ export function Estoque() {
 
   const fetchEstoque = async () => {
     setIsLoading(true);
+    const dateLimit = new Date();
+    dateLimit.setDate(dateLimit.getDate() - 3);
+
     const { data, error } = await fetchAllPaginated(() => supabase
       .from('packages')
       .select(`
@@ -60,6 +63,7 @@ export function Estoque() {
         users ( name )
       `)
       .in('status', ['ENTREGUE', 'DEVOLVIDA'])
+      .gte('scanned_at', dateLimit.toISOString())
       .order('scanned_at', { ascending: false })
     );
 

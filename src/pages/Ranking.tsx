@@ -6,7 +6,7 @@ import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 type PeriodType = 'Semanal' | 'Mensal' | 'Anual' | 'Personalizado';
 
 export function Ranking() {
-  const [period, setPeriod] = useState<PeriodType>('Mensal');
+  const [period, setPeriod] = useState<PeriodType>('Semanal');
   const [dateStart, setDateStart] = useState<string>(new Date().toISOString().split('T')[0]);
   const [dateEnd, setDateEnd] = useState<string>(new Date().toISOString().split('T')[0]);
   const [isLoading, setIsLoading] = useState(true);

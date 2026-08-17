@@ -15,33 +15,57 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey)
  * @param queryFactory Função que retorna a query base do Supabase
  * @param step Tamanho da página (default 1000)
  */
-export async function fetchAllPaginated(queryFactory: () => any, step = 1000) {
+export async function fetchAllPaginated(queryFactory: () => any, step = 1000, signal?: AbortSignal) {
   let allData: any[] = [];
   let from = 0;
   let hasMore = true;
   let fetchError = null;
+  const concurrency = 3; // Limite reduzido para evitar estourar o pool de conexões do Supabase (max 15-20)
 
   while (hasMore) {
-    const query = queryFactory();
-    const { data, error } = await query.range(from, from + step - 1);
+    if (signal?.aborted) break;
+
+    const promises = [];
+    for (let i = 0; i < concurrency; i++) {
+      let query = queryFactory();
+      if (signal && typeof query.abortSignal === 'function') {
+        query = query.abortSignal(signal);
+      }
+      promises.push(query.range(from + i * step, from + (i + 1) * step - 1));
+    }
     
-    if (error) {
-      fetchError = error;
+    try {
+      const results = await Promise.all(promises);
+      
+      for (const res of results) {
+        if (signal?.aborted) break;
+        if (res.error) {
+          if (res.error.message?.includes('aborted')) break;
+          fetchError = res.error;
+          hasMore = false;
+          break;
+        }
+        if (res.data) {
+          allData = allData.concat(res.data);
+          if (res.data.length < step) {
+            hasMore = false;
+            break;
+          }
+        } else {
+          hasMore = false;
+          break;
+        }
+      }
+    } catch (err: any) {
+      if (err.name === 'AbortError') break;
+      fetchError = err;
       break;
     }
     
-    if (data && data.length > 0) {
-      allData = allData.concat(data);
-      if (data.length < step) {
-        hasMore = false;
-      } else {
-        from += step;
-      }
-    } else {
-      hasMore = false;
-    }
+    if (fetchError || signal?.aborted) break;
+    from += step * concurrency;
   }
 
-  return { data: allData, error: fetchError };
+  return { data: signal?.aborted ? [] : allData, error: fetchError };
 }
 

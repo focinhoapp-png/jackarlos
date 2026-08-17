@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Package, DollarSign, Building2, Users, CheckCircle, ShieldCheck, Truck, CalendarDays, BarChart2 } from 'lucide-react';
+import { Package, DollarSign, Building2, Users, CheckCircle, ShieldCheck, Truck, CalendarDays, BarChart2, XCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/src/components/ui/card';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
@@ -294,7 +294,8 @@ export function Dashboard() {
     weekDeliveries: 0,
     monthDeliveries: 0,
     monthValue: 0,
-    companiesCount: 0
+    companiesCount: 0,
+    returnedMonth: 0
   });
 
   const [companyData, setCompanyData] = useState<any[]>([]);
@@ -367,7 +368,10 @@ export function Dashboard() {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
     const packagesQueryFactory = () => {
-      let q = supabase.from('packages').select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, driver_id, companies(name), drivers(name)');
+      let q = supabase.from('packages')
+        .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, driver_id, companies(name), drivers(name)')
+        .gte('scanned_at', startOfMonth);
+        
       if (isEntregador && driverId) {
         q = q.eq('driver_id', driverId);
       }
@@ -384,7 +388,7 @@ export function Dashboard() {
       const pkgs = packagesRes.data;
 
       let todayDelivs = 0, todayVal = 0, completedToday = 0;
-      let weekDelivs = 0, monthDelivs = 0, monthVal = 0;
+      let weekDelivs = 0, monthDelivs = 0, monthVal = 0, returnedMonth = 0;
 
       const compCounts: Record<string, number> = {};
       const hourCounts: Record<string, number> = {};
@@ -394,7 +398,11 @@ export function Dashboard() {
         const pDate = new Date(p.scanned_at).toISOString();
         const value = Number(p.delivery_value_snapshot || 0);
 
-        if (pDate >= startOfMonth) { monthDelivs++; monthVal += value; }
+        if (pDate >= startOfMonth) { 
+          monthDelivs++; 
+          monthVal += value; 
+          if (p.status === 'DEVOLVIDA') returnedMonth++;
+        }
         if (pDate >= startOfWeek)  { weekDelivs++; }
         if (pDate >= startOfDay) {
           todayDelivs++;
@@ -422,7 +430,8 @@ export function Dashboard() {
         monthDeliveries: monthDelivs,
         monthValue: monthVal,
         activeDrivers: driversRes.count || 0,
-        companiesCount: companiesRes.count || 0
+        companiesCount: companiesRes.count || 0,
+        returnedMonth
       });
 
       setCompanyData(Object.entries(compCounts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value));
@@ -529,6 +538,19 @@ export function Dashboard() {
             <div className="text-2xl font-bold">R$ {metrics.monthValue.toFixed(2).replace('.', ',')}</div>
           </CardContent>
         </Card>
+
+        {isUserEntregador && (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Entregas Devolvidas</CardTitle>
+              <XCircle className="h-4 w-4 text-red-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-red-500">{metrics.returnedMonth}</div>
+              <p className="text-xs text-muted-foreground">Devolvidas no mês</p>
+            </CardContent>
+          </Card>
+        )}
 
         {!isUserEntregador && (
           <Card>

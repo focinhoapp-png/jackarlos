@@ -34,6 +34,7 @@ export function History() {
   const [endDate, setEndDate] = useState('');
   const [driverFilter, setDriverFilter] = useState('');
   const [debouncedDriverFilter, setDebouncedDriverFilter] = useState('');
+  const [entregasFilter, setEntregasFilter] = useState('Todas as entregas');
 
   const [isEntregador, setIsEntregador] = useState(false);
   const [isConferente, setIsConferente] = useState(false);
@@ -49,11 +50,11 @@ export function History() {
       setCurrentPage(1);
     }, 500);
     return () => clearTimeout(timer);
-  }, [searchTerm, driverFilter, statusFilter, companyFilter, startDate, endDate]);
+  }, [searchTerm, driverFilter, statusFilter, companyFilter, startDate, endDate, entregasFilter]);
 
   useEffect(() => {
     loadUserAndFetch();
-  }, [currentPage, debouncedSearch, debouncedDriverFilter, statusFilter, companyFilter, startDate, endDate]);
+  }, [currentPage, debouncedSearch, debouncedDriverFilter, statusFilter, companyFilter, startDate, endDate, entregasFilter]);
 
   const loadUserAndFetch = async () => {
     setIsLoading(true);
@@ -109,6 +110,11 @@ export function History() {
 
     if (statusFilter !== 'Todos') {
       const dbStatus = statusFilter === 'Concluído' ? 'ENTREGUE' : statusFilter === 'Devolvido' ? 'DEVOLVIDA' : 'EM_ROTA';
+      query = query.eq('status', dbStatus);
+    }
+
+    if (entregasFilter !== 'Todas as entregas') {
+      const dbStatus = entregasFilter === 'Entregues' ? 'ENTREGUE' : 'DEVOLVIDA';
       query = query.eq('status', dbStatus);
     }
 
@@ -296,6 +302,18 @@ export function History() {
                       className="bg-white"
                       disabled={isEntregador}
                     />
+                </div>
+                <div className="space-y-1.5 flex-1">
+                  <label className="text-xs font-medium text-muted-foreground">Entregas</label>
+                  <select 
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                    value={entregasFilter}
+                    onChange={(e) => setEntregasFilter(e.target.value)}
+                  >
+                    <option value="Todas as entregas">Todas as entregas</option>
+                    <option value="Entregues">Entregues</option>
+                    <option value="Devolvidas">Devolvidas</option>
+                  </select>
                 </div>
               </div>
             </div>

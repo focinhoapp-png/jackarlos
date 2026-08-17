@@ -5,7 +5,7 @@ import { Button } from '@/src/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/src/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/src/components/ui/select";
 import { Input } from "@/src/components/ui/input";
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 import { logAction } from '@/src/lib/audit';
 
 interface Company {
@@ -91,35 +91,11 @@ export function ScannerPanel() {
   };
 
   const loadActiveDeliveries = async () => {
-    let allData: any[] = [];
-    let from = 0;
-    const step = 1000;
-    let hasMore = true;
-    let fetchError = null;
-
-    while (hasMore) {
-      const { data, error } = await supabase
-        .from('packages')
-        .select('driver_id, barcode, company_id, scanned_at, scanned_by, drivers(name, vehicle_type, vehicle_plate), companies(name)')
-        .eq('status', 'EM_ROTA')
-        .range(from, from + step - 1);
-        
-      if (error) {
-        fetchError = error;
-        break;
-      }
-      
-      if (data && data.length > 0) {
-        allData = allData.concat(data);
-        if (data.length < step) {
-          hasMore = false;
-        } else {
-          from += step;
-        }
-      } else {
-        hasMore = false;
-      }
-    }
+    const { data: allData, error: fetchError } = await fetchAllPaginated(() => supabase
+      .from('packages')
+      .select('driver_id, barcode, company_id, scanned_at, scanned_by, drivers(name, vehicle_type, vehicle_plate), companies(name)')
+      .eq('status', 'EM_ROTA')
+    );
 
     if (!fetchError && allData) {
       const grouped = allData.reduce((acc: any, pkg: any) => {

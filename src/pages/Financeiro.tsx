@@ -14,13 +14,15 @@ const toLocalISO = (d: Date) => {
 
 export function Financeiro() {
   const hoje = new Date();
-  const primeiroDiaMes = toLocalISO(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
-  const ultimoDiaMes  = toLocalISO(new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0));
+  const seteDiasAtras = new Date(hoje);
+  seteDiasAtras.setDate(hoje.getDate() - 7);
+  const dataInicialPadrao = toLocalISO(seteDiasAtras);
+  const ultimoDiaMes   = toLocalISO(new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0));
 
-  const [dateStart, setDateStart] = useState(primeiroDiaMes);
+  const [dateStart, setDateStart] = useState(dataInicialPadrao);
   const [dateEnd, setDateEnd]     = useState(ultimoDiaMes);
   // Valores aplicados (só atualizam ao clicar em Aplicar)
-  const [appliedStart, setAppliedStart] = useState(primeiroDiaMes);
+  const [appliedStart, setAppliedStart] = useState(dataInicialPadrao);
   const [appliedEnd,   setAppliedEnd]   = useState(ultimoDiaMes);
 
   const [metrics, setMetrics] = useState({

@@ -17,6 +17,7 @@ interface DeliveryRecord {
   value: number;
   bonus: number;
   base: string;
+  status: string;
 }
 
 export function Relatorios() {
@@ -76,7 +77,7 @@ export function Relatorios() {
     const queryFactory = async () => {
       let query = supabase
         .from('packages')
-        .select('id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
+        .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
         .gte('scanned_at', start.toISOString())
         .lte('scanned_at', end.toISOString());
         
@@ -110,7 +111,7 @@ export function Relatorios() {
     const finalQueryFactory = () => {
       let query = supabase
         .from('packages')
-        .select('id, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
+        .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
         .gte('scanned_at', start.toISOString())
         .lte('scanned_at', end.toISOString());
         
@@ -133,7 +134,8 @@ export function Relatorios() {
         time: new Date(p.scanned_at).toLocaleTimeString(),
         value: Number(p.delivery_value_snapshot || 0),
         bonus: Number(p.driver_bonus_snapshot || 0),
-        base: p.base_location || 'Guapimirim'
+        base: p.base_location || 'Guapimirim',
+        status: p.status
       }));
 
       setDisplayedResults(mapped);
@@ -147,6 +149,8 @@ export function Relatorios() {
   };
 
   const totalDeliveries = displayedResults.length;
+  const totalConcluidas = displayedResults.filter(r => r.status === 'ENTREGUE').length;
+  const totalDevolvidas = displayedResults.filter(r => r.status === 'DEVOLVIDA').length;
   const totalValue = displayedResults.reduce((sum, item) => sum + item.value + item.bonus, 0);
   
   const driversCount = displayedResults.reduce((acc, curr) => {
@@ -202,7 +206,7 @@ export function Relatorios() {
       }
     } else {
       const title = exportType === 'excel' ? 'Planilha' : 'PDF';
-      const text = `*Relatório de Entregas (${title})*\n\n*Total de Entregas:* ${totalDeliveries}\n*Faturamento Total:* R$ ${totalValue.toFixed(2).replace('.', ',')}\n\n(Gerado via Painel Jackarlos)`;
+      const text = `*Relatório de Entregas (${title})*\n\n*Total de Entregas:* ${totalDeliveries}\n*Concluídas:* ${totalConcluidas}\n*Devolvidas:* ${totalDevolvidas}\n*Faturamento Total:* R$ ${totalValue.toFixed(2).replace('.', ',')}\n\n(Gerado via Painel Jackarlos)`;
       const encoded = encodeURIComponent(text);
       window.open(`https://wa.me/?text=${encoded}`, '_blank');
     }
@@ -335,13 +339,33 @@ export function Relatorios() {
 
       {showResults && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Card className="bg-card">
               <CardContent className="p-6">
                 <div className="flex items-center">
                   <div>
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Total Entregas</p>
                     <p className="font-bold text-xl">{totalDeliveries}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="bg-card">
+              <CardContent className="p-6">
+                <div className="flex items-center">
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Concluídas</p>
+                    <p className="font-bold text-xl text-success">{totalConcluidas}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="bg-card">
+              <CardContent className="p-6">
+                <div className="flex items-center">
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Devolvidas</p>
+                    <p className="font-bold text-xl text-destructive">{totalDevolvidas}</p>
                   </div>
                 </div>
               </CardContent>
@@ -361,7 +385,7 @@ export function Relatorios() {
                 <div className="flex items-center">
                   <div className="flex-1 overflow-hidden">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Valor por Empresa</p>
-                    <div className="flex gap-2 text-xs font-bold mt-1">
+                    <div className="flex flex-wrap gap-2 text-xs font-bold mt-1">
                       {Object.entries(companyValue).map(([emp, val]: [string, any]) => (
                         <span key={emp}>{emp.substring(0,3)}: R${val.toFixed(0)}</span>
                       ))}

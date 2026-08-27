@@ -42,6 +42,7 @@ export function ScannerPanel() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedActiveDelivery, setSelectedActiveDelivery] = useState<any | null>(null);
   const [adjustingCompany, setAdjustingCompany] = useState<string | null>(null);
+  const [returnQty, setReturnQty] = useState<Record<string, string>>({});
   const [finalizing, setFinalizing] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserRole, setCurrentUserRole] = useState<string>('');
@@ -363,12 +364,55 @@ export function ScannerPanel() {
       }
 
       await loadActiveDeliveries().then((freshList) => {
-        // Sincroniza o modal com os dados atualizados do entregador
         setSelectedActiveDelivery((prev: any) => {
           if (!prev) return null;
           return freshList.find((d: any) => d.id === prev.id) || null;
         });
       });
+    } finally {
+      setAdjustingCompany(null);
+    }
+  };
+
+  /** Marca N pacotes de uma empresa como DEVOLVIDA de uma vez (bulk) */
+  const handleBulkReturn = async (driverId: string, companyName: string, qty: number) => {
+    if (qty <= 0 || isNaN(qty)) return;
+    const companyId = companies.find(c => c.name === companyName)?.id;
+    if (!companyId) return;
+
+    setAdjustingCompany(companyName);
+    try {
+      const { data: pkgs } = await supabase
+        .from('packages')
+        .select('barcode')
+        .eq('driver_id', driverId)
+        .eq('company_id', companyId)
+        .eq('status', 'EM_ROTA')
+        .limit(qty);
+
+      if (!pkgs || pkgs.length === 0) {
+        alert('Nenhum pacote em rota encontrado para esta empresa.');
+        return;
+      }
+
+      const barcodes = pkgs.map((p: any) => p.barcode);
+      const { error } = await supabase
+        .from('packages')
+        .update({ status: 'DEVOLVIDA' })
+        .in('barcode', barcodes);
+
+      if (error) {
+        alert('Erro ao registrar devoluções: ' + error.message);
+      } else {
+        // Limpa o campo após sucesso
+        setReturnQty(prev => ({ ...prev, [companyName]: '' }));
+        await loadActiveDeliveries().then((freshList) => {
+          setSelectedActiveDelivery((prev: any) => {
+            if (!prev) return null;
+            return freshList.find((d: any) => d.id === prev.id) || null;
+          });
+        });
+      }
     } finally {
       setAdjustingCompany(null);
     }
@@ -721,6 +765,7 @@ export function ScannerPanel() {
                               </div>
                               <div className="flex items-center gap-2">
                                   <>
+                                    {/* Controles unitários */}
                                     <button
                                       disabled={isLoading || count <= 0}
                                       onClick={() => handleAdjustCompanyCount(selectedActiveDelivery.id, companyName, 'down')}
@@ -739,6 +784,39 @@ export function ScannerPanel() {
                                       title="Reverter 1 devolvida para em rota"
                                     >
                                       <ChevronUp className="h-4 w-4" />
+                                    </button>
+
+                                    {/* Separador */}
+                                    <div className="w-px h-6 bg-border mx-1" />
+
+                                    {/* Input de quantidade para devolução em lote */}
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      max={count}
+                                      placeholder="Qtd"
+                                      disabled={isLoading || count <= 0}
+                                      value={returnQty[companyName] ?? ''}
+                                      onChange={(e) => setReturnQty(prev => ({ ...prev, [companyName]: e.target.value }))}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          const qty = parseInt(returnQty[companyName] || '0', 10);
+                                          handleBulkReturn(selectedActiveDelivery.id, companyName, Math.min(qty, count));
+                                        }
+                                      }}
+                                      className="w-14 h-7 text-center text-xs font-bold border border-border rounded-lg bg-card focus:outline-none focus:ring-1 focus:ring-destructive/50 disabled:opacity-30"
+                                      title="Digite a quantidade devolvida e pressione Enter ou clique em ✓"
+                                    />
+                                    <button
+                                      disabled={isLoading || count <= 0 || !returnQty[companyName]}
+                                      onClick={() => {
+                                        const qty = parseInt(returnQty[companyName] || '0', 10);
+                                        handleBulkReturn(selectedActiveDelivery.id, companyName, Math.min(qty, count));
+                                      }}
+                                      className="h-7 px-2 rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-xs font-bold hover:bg-destructive/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                      title="Confirmar devolução em lote"
+                                    >
+                                      ✓
                                     </button>
                                   </>
                               </div>

@@ -95,7 +95,9 @@ export function History() {
         companies!inner ( name ),
         drivers!inner ( name, id ),
         users!inner ( name )
-      `, { count: 'exact' }).limit(999999);
+      `, { count: 'exact' })
+      .neq('status', 'EM_ROTA') // Apenas pacotes finalizados
+      .limit(999999);
 
     if (role === 'ENTREGADOR' && driverId) {
       query = query.eq('driver_id', driverId);
@@ -258,7 +260,6 @@ export function History() {
                   >
                     <option value="Todos">Todos</option>
                     <option value="Concluído">Concluído</option>
-                    <option value="Em Rota">Em Rota</option>
                     <option value="Devolvido">Devolvido</option>
                   </select>
                 </div>

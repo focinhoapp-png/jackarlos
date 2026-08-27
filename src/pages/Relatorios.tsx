@@ -79,7 +79,8 @@ export function Relatorios() {
         .from('packages')
         .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
         .gte('scanned_at', start.toISOString())
-        .lte('scanned_at', end.toISOString());
+        .lte('scanned_at', end.toISOString())
+        .neq('status', 'EM_ROTA'); // Apenas pacotes finalizados
         
       if (filterBase !== 'todas') {
         query = query.eq('base_location', filterBase);
@@ -113,7 +114,8 @@ export function Relatorios() {
         .from('packages')
         .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
         .gte('scanned_at', start.toISOString())
-        .lte('scanned_at', end.toISOString());
+        .lte('scanned_at', end.toISOString())
+        .neq('status', 'EM_ROTA'); // Apenas pacotes finalizados
         
       if (filterBase !== 'todas') query = query.eq('base_location', filterBase);
       const effectiveDriverId = isEntregador ? driverId : filterDriverId;

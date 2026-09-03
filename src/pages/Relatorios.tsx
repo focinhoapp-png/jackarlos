@@ -170,6 +170,16 @@ export function Relatorios() {
     return acc;
   }, {} as Record<string, number>);
 
+  const uniqueDates = Array.from(new Set(displayedResults.map(r => r.date))).sort((a, b) => {
+    const parse = (str: string) => {
+      const parts = str.split('/');
+      if (parts.length === 3) {
+        return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`).getTime();
+      }
+      return 0;
+    };
+    return parse(a) - parse(b);
+  });
   const [exportType, setExportType] = useState<'excel' | 'pdf' | null>(null);
 
   const generateCSV = (data: DeliveryRecord[]) => {
@@ -409,6 +419,26 @@ export function Relatorios() {
                         </span>
                       ))}
                     </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="bg-card">
+              <CardContent className="p-6">
+                <div className="flex items-center">
+                  <div className="flex-1 overflow-hidden">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Dias Carregados</p>
+                    <div className="flex items-end gap-2 mt-1">
+                      <p className="font-bold text-xl">{uniqueDates.length}</p>
+                      <span className="text-xs text-muted-foreground mb-1">viagem(ns)</span>
+                    </div>
+                    {uniqueDates.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2 max-h-16 overflow-y-auto pr-1">
+                        {uniqueDates.map(d => (
+                           <span key={d} className="text-[10px] bg-muted/50 px-1.5 py-0.5 rounded text-muted-foreground border border-border">{d.substring(0, 5)}</span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </CardContent>

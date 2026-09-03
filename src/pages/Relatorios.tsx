@@ -31,6 +31,7 @@ export function Relatorios() {
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
 
   const [displayedResults, setDisplayedResults] = useState<DeliveryRecord[]>([]);
+  const [selectedDateDetails, setSelectedDateDetails] = useState<string | null>(null);
   const [allDrivers, setAllDrivers] = useState<{ id: string; name: string }[]>([]);
   const [allCompanies, setAllCompanies] = useState<string[]>([]);
   const [isEntregador, setIsEntregador] = useState(false);
@@ -435,7 +436,14 @@ export function Relatorios() {
                     {uniqueDates.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2 max-h-16 overflow-y-auto pr-1">
                         {uniqueDates.map(d => (
-                           <span key={d} className="text-[10px] bg-muted/50 px-1.5 py-0.5 rounded text-muted-foreground border border-border">{d.substring(0, 5)}</span>
+                           <span 
+                             key={d} 
+                             onClick={() => setSelectedDateDetails(d)}
+                             className="text-[10px] bg-muted/50 px-1.5 py-0.5 rounded text-muted-foreground border border-border cursor-pointer hover:bg-primary/20 hover:text-primary transition-colors"
+                             title="Ver detalhes do dia"
+                           >
+                             {d.substring(0, 5)}
+                           </span>
                         ))}
                       </div>
                     )}
@@ -488,6 +496,44 @@ export function Relatorios() {
           </Card>
         </div>
       )}
+
+      {/* Modal de Detalhes do Dia */}
+      <Dialog open={!!selectedDateDetails} onOpenChange={(open) => !open && setSelectedDateDetails(null)}>
+        <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>
+              Entregas do dia {selectedDateDetails} 
+              <span className="ml-2 text-muted-foreground text-sm font-normal">
+                (Total: {displayedResults.filter(r => r.date === selectedDateDetails).length} entregas)
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="overflow-auto flex-1 mt-4 border border-border rounded-md">
+            <table className="w-full text-sm text-left min-w-[600px]">
+              <thead className="text-xs text-muted-foreground uppercase bg-muted/40 border-b border-border sticky top-0 z-10">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Hora</th>
+                  <th className="px-4 py-3 font-medium">Entregador</th>
+                  <th className="px-4 py-3 font-medium">Empresa</th>
+                  <th className="px-4 py-3 font-medium">Base</th>
+                  <th className="px-4 py-3 font-medium text-right">Valor Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayedResults.filter(r => r.date === selectedDateDetails).map((item, index) => (
+                  <tr key={index} className="border-b border-border hover:bg-muted/20">
+                    <td className="px-4 py-3 text-muted-foreground">{item.time}</td>
+                    <td className="px-4 py-3 font-bold text-foreground">{item.driver}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{item.company}</td>
+                    <td className="px-4 py-3 text-foreground font-medium">{item.base || 'Guapimirim'}</td>
+                    <td className="px-4 py-3 text-right font-bold text-success">R$ {(item.value + item.bonus).toFixed(2).replace('.', ',')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

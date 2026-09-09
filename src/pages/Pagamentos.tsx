@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { DollarSign, ChevronLeft, ChevronRight, CheckCircle2, Clock, Eye, Package, Building2, Calendar, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/src/components/ui/card';
 import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
@@ -12,9 +12,10 @@ export function Pagamentos() {
   const [isLoading, setIsLoading] = useState(true);
   const [atrasados, setAtrasados] = useState<{ month: string; drivers: string[] }[]>([]);
 
-  // Detalhamento
+  // Detalhamento (carregamento sob demanda)
   const [selectedDriver, setSelectedDriver] = useState<any | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
 
   // Ref para scroll até a seção "Já Pagos"
   const pagosSectionRef = useRef<HTMLDivElement>(null);
@@ -54,69 +55,47 @@ export function Pagamentos() {
     return `${y}-${m}-${d}`;
   };
 
-  /** Verifica meses anteriores (últimos 6) com pagamentos ainda pendentes (Paralelizado com AbortSignal) */
+  /**
+   * RPC: get_late_payment_summary
+   * Toda a lógica de GROUP BY / DISTINCT é feita no banco.
+   * Retorna apenas os drivers PENDENTES de cada mês passado.
+   */
   const fetchAtrasados = async (signal?: AbortSignal) => {
     try {
       const hoje = new Date();
-      
-      const promises = Array.from({ length: 6 }, async (_, index) => {
-        const i = index + 1;
-        const refDate = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
-        const startOfMonth = new Date(refDate.getFullYear(), refDate.getMonth(), 1);
-        const endOfMonth = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0, 23, 59, 59, 999);
+      const seisM    = new Date(hoje.getFullYear(), hoje.getMonth() - 6, 1);
+      const mesAtualStart = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
 
-        const { data: pkgs } = await fetchAllPaginated(() => supabase
-          .from('packages')
-          .select('driver_id, drivers(name)')
-          .gte('scanned_at', startOfMonth.toISOString())
-          .lte('scanned_at', endOfMonth.toISOString())
-        );
+      const t0 = performance.now();
 
-        if (signal?.aborted) return null;
-        if (!pkgs || pkgs.length === 0) return null;
-
-        const driversNoMes: Record<string, string> = {};
-        pkgs.forEach((p: any) => {
-          if (p.driver_id && p.drivers?.name) {
-            driversNoMes[p.driver_id] = p.drivers.name;
-          }
-        });
-
-        if (Object.keys(driversNoMes).length === 0) return null;
-
-        const isoStart = localDateStr(startOfMonth);
-        const isoEnd = localDateStr(new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0));
-
-        const { data: paymentsData } = await supabase
-          .from('driver_payments')
-          .select('driver_id, status')
-          .eq('period_start', isoStart)
-          .eq('period_end', isoEnd);
-
-        if (signal?.aborted) return null;
-
-        const paidDrivers = new Set<string>();
-        if (paymentsData) {
-          paymentsData.forEach((p: any) => {
-            if (p.status === 'Pago') paidDrivers.add(p.driver_id);
-          });
-        }
-
-        const pendentesNoMes = Object.entries(driversNoMes)
-          .filter(([id]) => !paidDrivers.has(id))
-          .map(([, name]) => name);
-
-        if (pendentesNoMes.length > 0) {
-          const monthLabel = refDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-          return { month: monthLabel, drivers: pendentesNoMes };
-        }
-        return null;
+      const { data, error } = await supabase.rpc('get_late_payment_summary', {
+        p_start: localDateStr(seisM),
+        p_end:   localDateStr(mesAtualStart)
       });
 
-      const results = await Promise.all(promises);
-      if (!signal?.aborted) {
-        setAtrasados(results.filter(Boolean) as { month: string; drivers: string[] }[]);
-      }
+      const rpcMs = (performance.now() - t0).toFixed(0);
+      console.info(`[Pagamentos] RPC get_late_payment_summary: ${rpcMs}ms`);
+
+      if (signal?.aborted) return;
+      if (error) { console.error('get_late_payment_summary error:', error); return; }
+
+      if (!data || data.length === 0) { setAtrasados([]); return; }
+
+      // Agrupar por month_key no front (apenas agrupamento, sem cálculo)
+      const byMonth: Record<string, { label: string; drivers: string[] }> = {};
+      data.forEach((row: { month_key: string; driver_name: string }) => {
+        const [year, month] = row.month_key.split('-').map(Number);
+        const label = new Date(year, month - 1, 1)
+          .toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+        if (!byMonth[row.month_key]) byMonth[row.month_key] = { label, drivers: [] };
+        byMonth[row.month_key].drivers.push(row.driver_name);
+      });
+
+      const result = Object.entries(byMonth)
+        .sort(([a], [b]) => b.localeCompare(a)) // mais recente primeiro
+        .map(([, { label, drivers }]) => ({ month: label, drivers }));
+
+      if (!signal?.aborted) setAtrasados(result);
     } catch (err) {
       if (!signal?.aborted) console.error('Erro ao buscar pagamentos atrasados:', err);
     }
@@ -124,95 +103,62 @@ export function Pagamentos() {
 
   const fetchPagamentos = async () => {
     setIsLoading(true);
+    const t0Total = performance.now();
     try {
       const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-      const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
+      const endOfMonth   = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
+      const isoStart = localDateStr(startOfMonth);
+      const isoEnd   = localDateStr(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
 
-      // 1. Fetch pacotes no mês atual
-      const { data: pkgs, error } = await fetchAllPaginated(() => supabase
-        .from('packages')
-        .select(`
-          id,
-          barcode,
-          scanned_at,
-          delivery_value_snapshot,
-          driver_bonus_snapshot,
-          driver_id,
-          company_id,
-          status,
-          drivers (name),
-          companies (name)
-        `)
-        .gte('scanned_at', startOfMonth.toISOString())
-        .lte('scanned_at', endOfMonth.toISOString())
-      );
+      // -------------------------------------------------------------------
+      // RPC: get_driver_payment_summary
+      // O banco faz COUNT + SUM GROUP BY driver — retorna 1 linha por driver.
+      // Em paralelo, busca o status de pagamento do mês.
+      // -------------------------------------------------------------------
+      const t0Rpc = performance.now();
 
-      if (error) throw error;
-
-      if (pkgs) {
-        // Agrupar por driver
-        const pagtosAgrupados: Record<string, { driverId: string, driverName: string, count: number, repasse: number, packages: any[] }> = {};
-        
-        pkgs.forEach((p: any) => {
-          if (!p.driver_id || !p.drivers?.name) return;
-
-          const val = Number(p.delivery_value_snapshot || 0);
-          const bon = Number(p.driver_bonus_snapshot || 0);
-          const valorRepasse = val + bon;
-
-          const dId = p.driver_id;
-          
-          if (!pagtosAgrupados[dId]) {
-            pagtosAgrupados[dId] = { driverId: dId, driverName: p.drivers.name, count: 0, repasse: 0, packages: [] };
-          }
-          pagtosAgrupados[dId].count++;
-          pagtosAgrupados[dId].repasse += valorRepasse;
-          
-          pagtosAgrupados[dId].packages.push({
-            id: p.id,
-            barcode: p.barcode,
-            company: p.companies?.name || 'Desconhecida',
-            date: new Date(p.scanned_at).toLocaleDateString('pt-BR'),
-            time: new Date(p.scanned_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-            value: valorRepasse,
-            rawDate: p.scanned_at
-          });
-        });
-
-        // Ordenar pacotes dentro de cada agrupamento (mais recentes primeiro) usando data ISO
-        Object.values(pagtosAgrupados).forEach(group => {
-          group.packages.sort((a, b) => new Date(b.rawDate).getTime() - new Date(a.rawDate).getTime());
-        });
-
-        // 2. Fetch driver_payments for this month
-        const isoStart = localDateStr(startOfMonth);
-        const isoEnd = localDateStr(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
-
-        const { data: paymentsData, error: payError } = await supabase
+      const [summaryRes, paymentsRes] = await Promise.all([
+        supabase.rpc('get_driver_payment_summary', {
+          p_start: startOfMonth.toISOString(),
+          p_end:   endOfMonth.toISOString()
+        }),
+        supabase
           .from('driver_payments')
-          .select('*')
+          .select('driver_id, status')
           .eq('period_start', isoStart)
-          .eq('period_end', isoEnd);
+          .eq('period_end', isoEnd)
+      ]);
 
-        const paymentMap: Record<string, string> = {};
-        if (!payError && paymentsData) {
-          paymentsData.forEach(p => {
-            paymentMap[p.driver_id] = p.status;
-          });
-        }
+      const rpcMs = (performance.now() - t0Rpc).toFixed(0);
+      console.info(`[Pagamentos] RPC get_driver_payment_summary: ${rpcMs}ms`);
 
-        const pDrivers = Object.values(pagtosAgrupados).map((p) => ({
-          id: p.driverId,
-          name: p.driverName,
-          count: p.count,
-          amount: p.repasse.toFixed(2).replace('.', ','),
-          rawAmount: p.repasse,
-          status: paymentMap[p.driverId] || 'Pendente',
-          packages: p.packages
-        })).sort((a, b) => b.count - a.count);
+      if (summaryRes.error) throw summaryRes.error;
 
-        setPagamentos(pDrivers);
+      const rows = summaryRes.data || [];
+
+      // Mapa de status de pagamento
+      const paymentMap: Record<string, string> = {};
+      if (!paymentsRes.error && paymentsRes.data) {
+        paymentsRes.data.forEach((p: any) => { paymentMap[p.driver_id] = p.status; });
       }
+
+      // Montar lista final — sem loop pesado, apenas mapeamento 1:1
+      const pDrivers = rows.map((row: any) => ({
+        id:        row.driver_id,
+        name:      row.driver_name,
+        count:     Number(row.pkg_count),
+        amount:    Number(row.total_repasse).toFixed(2).replace('.', ','),
+        rawAmount: Number(row.total_repasse),
+        status:    paymentMap[row.driver_id] || 'Pendente',
+        packages:  null // carregado sob demanda ao abrir o modal
+      }));
+      // Já vem ordenado pelo banco (ORDER BY pkg_count DESC)
+
+      setPagamentos(pDrivers);
+
+      const totalMs = (performance.now() - t0Total).toFixed(0);
+      console.info(`[Pagamentos] ⏱ Tempo total de carregamento da página: ${totalMs}ms`);
+      console.info(`[Pagamentos] └─ RPC SQL: ${rpcMs}ms | JS + rede: ${(Number(totalMs) - Number(rpcMs)).toFixed(0)}ms`);
     } catch (err: any) {
       console.error(err);
       alert('Erro ao carregar pagamentos');
@@ -220,6 +166,45 @@ export function Pagamentos() {
       setIsLoading(false);
     }
   };
+
+  /** Busca os pacotes detalhados de um entregador sob demanda (ao abrir o modal) */
+  const fetchDriverDetails = useCallback(async (driverId: string) => {
+    const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+    const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const { data: pkgs, error } = await fetchAllPaginated(() => supabase
+      .from('packages')
+      .select(`
+        id,
+        barcode,
+        scanned_at,
+        delivery_value_snapshot,
+        driver_bonus_snapshot,
+        companies (name)
+      `)
+      .eq('driver_id', driverId)
+      .gte('scanned_at', startOfMonth.toISOString())
+      .lte('scanned_at', endOfMonth.toISOString())
+    );
+
+    if (error) throw error;
+
+    const packages = (pkgs || []).map((p: any) => {
+      const val = Number(p.delivery_value_snapshot || 0);
+      const bon = Number(p.driver_bonus_snapshot || 0);
+      return {
+        id: p.id,
+        barcode: p.barcode,
+        company: p.companies?.name || 'Desconhecida',
+        date: new Date(p.scanned_at).toLocaleDateString('pt-BR'),
+        time: new Date(p.scanned_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+        value: val + bon,
+        rawDate: p.scanned_at
+      };
+    }).sort((a: any, b: any) => new Date(b.rawDate).getTime() - new Date(a.rawDate).getTime());
+
+    return packages;
+  }, [currentDate]);
 
   const updateStatus = async (driverId: string, driverName: string, newStatus: string, rawAmount: number) => {
     // Optimistic UI update
@@ -271,9 +256,19 @@ export function Pagamentos() {
     }
   };
 
-  const openDriverDetails = (driver: any) => {
-    setSelectedDriver(driver);
+  const openDriverDetails = async (driver: any) => {
+    // Abre o modal imediatamente com os dados já disponíveis
+    setSelectedDriver({ ...driver, packages: null });
     setIsModalOpen(true);
+    setIsLoadingDetails(true);
+    try {
+      const packages = await fetchDriverDetails(driver.id);
+      setSelectedDriver((prev: any) => prev ? { ...prev, packages } : prev);
+    } catch (err) {
+      console.error('Erro ao carregar detalhes do entregador:', err);
+    } finally {
+      setIsLoadingDetails(false);
+    }
   };
 
   const pendentes = pagamentos.filter(p => p.status !== 'Pago');
@@ -493,32 +488,38 @@ export function Pagamentos() {
                   Lista de Pacotes Bipados
                 </h3>
                 <div className="border border-border rounded-lg overflow-hidden">
-                  <div className="max-h-[350px] overflow-y-auto">
-                    <table className="w-full text-sm text-left">
-                      <thead className="text-xs text-muted-foreground uppercase bg-muted/50 border-b border-border sticky top-0 backdrop-blur-md">
-                        <tr>
-                          <th className="px-4 py-3 font-medium">Código</th>
-                          <th className="px-4 py-3 font-medium">Empresa</th>
-                          <th className="px-4 py-3 font-medium">Data</th>
-                          <th className="px-4 py-3 font-medium">Hora</th>
-                          <th className="px-4 py-3 font-medium text-right">Repasse</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {selectedDriver.packages.map((pkg: any) => (
-                          <tr key={pkg.id} className="hover:bg-muted/30">
-                            <td className="px-4 py-3 font-medium text-foreground">{pkg.barcode}</td>
-                            <td className="px-4 py-3">{pkg.company}</td>
-                            <td className="px-4 py-3">{pkg.date}</td>
-                            <td className="px-4 py-3 text-muted-foreground">{pkg.time}</td>
-                            <td className="px-4 py-3 text-right text-emerald-500 font-medium">
-                              R$ {pkg.value.toFixed(2).replace('.', ',')}
-                            </td>
+                  {isLoadingDetails ? (
+                    <div className="flex justify-center items-center py-10">
+                      <div className="w-6 h-6 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  ) : (
+                    <div className="max-h-[350px] overflow-y-auto">
+                      <table className="w-full text-sm text-left">
+                        <thead className="text-xs text-muted-foreground uppercase bg-muted/50 border-b border-border sticky top-0 backdrop-blur-md">
+                          <tr>
+                            <th className="px-4 py-3 font-medium">Código</th>
+                            <th className="px-4 py-3 font-medium">Empresa</th>
+                            <th className="px-4 py-3 font-medium">Data</th>
+                            <th className="px-4 py-3 font-medium">Hora</th>
+                            <th className="px-4 py-3 font-medium text-right">Repasse</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {(selectedDriver.packages || []).map((pkg: any) => (
+                            <tr key={pkg.id} className="hover:bg-muted/30">
+                              <td className="px-4 py-3 font-medium text-foreground">{pkg.barcode}</td>
+                              <td className="px-4 py-3">{pkg.company}</td>
+                              <td className="px-4 py-3">{pkg.date}</td>
+                              <td className="px-4 py-3 text-muted-foreground">{pkg.time}</td>
+                              <td className="px-4 py-3 text-right text-emerald-500 font-medium">
+                                R$ {pkg.value.toFixed(2).replace('.', ',')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

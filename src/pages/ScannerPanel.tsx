@@ -587,29 +587,30 @@ export function ScannerPanel() {
                     onDragStart={() => handleDragStart(index)}
                     onDragOver={handleDragOver}
                     onDrop={() => handleDrop(index)}
+                    className="h-full"
                   >
                     <Card 
-                      className={`relative overflow-hidden cursor-pointer transition-all hover:shadow-md ${isFirst ? 'border-primary shadow-[0_0_15px_rgba(59,130,246,0.15)] bg-primary/5' : 'bg-card border-border hover:border-primary/50'}`}
+                      className={`relative overflow-hidden cursor-pointer transition-all hover:shadow-md h-full flex flex-col ${isFirst ? 'border-primary shadow-[0_0_15px_rgba(59,130,246,0.15)] bg-primary/5' : 'bg-card border-border hover:border-primary/50'}`}
                       onClick={() => handleSelectDriver(d)}
                     >
                       {isFirst && (
                         <div className="absolute top-0 left-0 w-full h-1 bg-primary"></div>
                       )}
-                      <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative">
+                      <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative flex-1">
                         <div className="absolute top-2 right-2 text-muted-foreground opacity-50 cursor-grab hover:opacity-100">
                           <GripVertical className="h-5 w-5" />
                         </div>
-                        <div className="h-16 w-16 bg-secondary rounded-full flex items-center justify-center border-2 border-primary/20">
+                        <div className="h-16 w-16 bg-secondary rounded-full flex items-center justify-center border-2 border-primary/20 shrink-0">
                           <User className="h-8 w-8 text-muted-foreground" />
                         </div>
-                        <div>
+                        <div className="flex-1 flex flex-col justify-center">
                           <h3 className="font-bold text-sm line-clamp-1" title={d.name}>{d.name}</h3>
                           <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
                             <Truck className="h-3 w-3"/> {d.vehicle_type || '-'}
                           </p>
                           <p className="text-xs font-mono bg-secondary px-2 py-0.5 rounded mt-1 inline-block">{d.vehicle_plate || 'Sem Placa'}</p>
                         </div>
-                        <div className="w-full pt-3 border-t border-border flex justify-between items-center">
+                        <div className="w-full pt-3 border-t border-border flex flex-wrap justify-between items-center gap-2 mt-auto">
                           <Button 
                             variant="ghost" 
                             size="sm" 
@@ -621,7 +622,7 @@ export function ScannerPanel() {
                           >
                             Remover
                           </Button>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center justify-end gap-2 flex-1">
                             <Button 
                               variant="default" 
                               size="sm" 
@@ -633,7 +634,7 @@ export function ScannerPanel() {
                             >
                               Carregar
                             </Button>
-                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md ${isFirst ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
+                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md whitespace-nowrap ${isFirst ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
                               {isFirst ? 'Carregando' : 'Aguardando'}
                             </span>
                           </div>

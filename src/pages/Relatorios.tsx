@@ -32,7 +32,7 @@ export function Relatorios() {
 
   const [displayedResults, setDisplayedResults] = useState<DeliveryRecord[]>([]);
   const [selectedDateDetails, setSelectedDateDetails] = useState<string | null>(null);
-  const [allDrivers, setAllDrivers] = useState<{ id: string; name: string }[]>([]);
+  const [allDrivers, setAllDrivers] = useState<{ id: string; name: string; base_location?: string | null }[]>([]);
   const [allCompanies, setAllCompanies] = useState<string[]>([]);
   const [isEntregador, setIsEntregador] = useState(false);
   const [driverId, setDriverId] = useState<string | null>(null);
@@ -40,8 +40,8 @@ export function Relatorios() {
   const [isCheckingRole, setIsCheckingRole] = useState(true);
 
   useEffect(() => {
-    supabase.from('drivers').select('id, name').order('name').then(res => {
-      if (res.data) setAllDrivers(res.data.map(d => ({ id: d.id, name: d.name })));
+    supabase.from('drivers').select('id, name, base_location').order('name').then(res => {
+      if (res.data) setAllDrivers(res.data.map(d => ({ id: d.id, name: d.name, base_location: d.base_location })));
     });
     supabase.from('companies').select('name').then(res => {
       if (res.data) setAllCompanies(res.data.map(c => c.name));
@@ -264,7 +264,15 @@ export function Relatorios() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="space-y-2">
                   <Label>Filtrar por Base</Label>
-                  <Select value={filterBase} onValueChange={setFilterBase} disabled={isEntregador || isCheckingRole}>
+                  <Select 
+                    value={filterBase} 
+                    onValueChange={(val) => {
+                      setFilterBase(val);
+                      setFilterDriver('todos');
+                      setFilterDriverId(null);
+                    }} 
+                    disabled={isEntregador || isCheckingRole}
+                  >
                     <SelectTrigger className="bg-background">
                       <SelectValue placeholder={isCheckingRole ? "Carregando..." : "Todas as bases"} />
                     </SelectTrigger>
@@ -309,7 +317,9 @@ export function Relatorios() {
                   </SelectTrigger>
                   <SelectContent>
                     {!isEntregador && <SelectItem value="todos">Todos os Entregadores</SelectItem>}
-                    {allDrivers.map(d => (
+                    {allDrivers
+                      .filter(d => filterBase === 'todas' || d.base_location === filterBase)
+                      .map(d => (
                       <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>
                     ))}
                   </SelectContent>

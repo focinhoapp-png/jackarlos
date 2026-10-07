@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart3, FileText, Download, FileSpreadsheet, Calendar, Filter, Search, Package, DollarSign, Building2, Users, MessageCircle } from 'lucide-react';
+import { BarChart3, FileText, Download, FileSpreadsheet, Calendar, Filter, Search, Package, DollarSign, Building2, Users, MessageCircle, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/src/components/ui/card';
 import { Button } from '@/src/components/ui/button';
 import { Label } from '@/src/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/src/components/ui/select';
 import { Input } from '@/src/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/src/components/ui/dialog';
-import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
+import { supabase, fetchStreamingPaginated } from '@/src/lib/supabase';
 
 interface DeliveryRecord {
   id: string;
@@ -18,6 +18,7 @@ interface DeliveryRecord {
   bonus: number;
   base: string;
   status: string;
+  scanned_at?: string;
 }
 
 export function Relatorios() {
@@ -30,8 +31,26 @@ export function Relatorios() {
   const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
 
-  const [displayedResults, setDisplayedResults] = useState<DeliveryRecord[]>([]);
+  // Novos Estados (Arquitetura Otimizada V2)
+  const [metrics, setMetrics] = useState<{
+    totalDeliveries: number;
+    totalConcluidas: number;
+    totalDevolvidas: number;
+    totalValue: number;
+    companyValue: Record<string, number>;
+    companyCount: Record<string, number>;
+    uniqueDates: string[];
+  } | null>(null);
+
+  const [tableData, setTableData] = useState<DeliveryRecord[]>([]);
+  const [lastCursor, setLastCursor] = useState<{ scannedAt: string, id: string } | null>(null);
+  const [hasMoreTableData, setHasMoreTableData] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  
   const [selectedDateDetails, setSelectedDateDetails] = useState<string | null>(null);
+  const [modalData, setModalData] = useState<DeliveryRecord[]>([]);
+  const [isLoadingModal, setIsLoadingModal] = useState(false);
+
   const [allDrivers, setAllDrivers] = useState<{ id: string; name: string; base_location?: string | null }[]>([]);
   const [allCompanies, setAllCompanies] = useState<string[]>([]);
   const [isEntregador, setIsEntregador] = useState(false);
@@ -70,65 +89,109 @@ export function Relatorios() {
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSearching(true);
+    setMetrics(null);
+    setTableData([]);
+    setLastCursor(null);
+    setHasMoreTableData(true);
+    setShowResults(false);
 
-    // Ajuste de fuso: usamos início e fim do dia em horário local convertido para ISO
-    const start = new Date(`${startDate}T00:00:00`);
-    const end = new Date(`${endDate}T23:59:59`);
-    
-    const queryFactory = async () => {
-      let query = supabase
-        .from('packages')
-        .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
-        .gte('scanned_at', start.toISOString())
-        .lte('scanned_at', end.toISOString())
-        .neq('status', 'EM_ROTA'); // Apenas pacotes finalizados
-        
-      if (filterBase !== 'todas') {
-        query = query.eq('base_location', filterBase);
-      }
-
-      // Filtra por driver_id diretamente na query (igual ao Estoque)
-      const effectiveDriverId = isEntregador ? driverId : filterDriverId;
-      if (effectiveDriverId) {
-        query = query.eq('driver_id', effectiveDriverId);
-      }
-
-      if (filterCompany !== 'todas') {
-        const companyData = await supabase.from('companies').select('id').eq('name', filterCompany).single();
-        if (companyData.data?.id) {
-          query = query.eq('company_id', companyData.data.id);
-        }
-      }
-      return query;
-    };
-    
-    // We need to unwrap the async factory, but fetchAllPaginated takes a sync factory.
-    // Wait, we can just resolve the company data beforehand!
     let compId = null;
     if (filterCompany !== 'todas') {
       const companyData = await supabase.from('companies').select('id').eq('name', filterCompany).single();
       compId = companyData.data?.id;
     }
 
-    const finalQueryFactory = () => {
-      let query = supabase
-        .from('packages')
-        .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
-        .gte('scanned_at', start.toISOString())
-        .lte('scanned_at', end.toISOString())
-        .neq('status', 'EM_ROTA'); // Apenas pacotes finalizados
-        
-      if (filterBase !== 'todas') query = query.eq('base_location', filterBase);
-      const effectiveDriverId = isEntregador ? driverId : filterDriverId;
-      if (effectiveDriverId) query = query.eq('driver_id', effectiveDriverId);
-      if (compId) query = query.eq('company_id', compId);
+    const effectiveDriverId = isEntregador ? driverId : filterDriverId;
+
+    // 1. Busca Métricas pela RPC
+    const startTime = performance.now();
+    const { data: rpcData, error: rpcError } = await supabase.rpc('get_relatorios_metrics', {
+      p_start: startDate,
+      p_end: endDate,
+      p_base: filterBase === 'todas' ? null : filterBase,
+      p_company_id: compId,
+      p_driver_id: effectiveDriverId
+    });
+
+    if (rpcError) {
+      console.error(rpcError);
+      alert('Erro ao buscar métricas gerais.');
+      setIsSearching(false);
+      return;
+    }
+
+    // Processa retorno da RPC
+    const cValue: Record<string, number> = {};
+    const cCount: Record<string, number> = {};
+    (rpcData.empresas || []).forEach((emp: any) => {
+      cValue[emp.name] = Number(emp.value);
+      cCount[emp.name] = Number(emp.count);
+    });
+
+    setMetrics({
+      totalDeliveries: Number(rpcData.totalDeliveries || 0),
+      totalConcluidas: Number(rpcData.totalConcluidas || 0),
+      totalDevolvidas: Number(rpcData.totalDevolvidas || 0),
+      totalValue: Number(rpcData.totalValue || 0),
+      companyValue: cValue,
+      companyCount: cCount,
+      uniqueDates: rpcData.uniqueDates || []
+    });
+
+    console.log(`[Performance] Métricas carregadas em ${(performance.now() - startTime).toFixed(2)}ms`);
+
+    // 2. Busca Tabela Inicial
+    await loadTablePage(null, null, compId, effectiveDriverId);
+
+    setShowResults(true);
+    setIsSearching(false);
+  };
+
+  const loadTablePage = async (scannedAtCursor: string | null = null, idCursor: string | null = null, forceCompId: string | null = null, forceDrvId: string | null = null) => {
+    setIsLoadingMore(true);
+    
+    const [y1, m1, d1] = startDate.split('-');
+    const dStart = new Date(Number(y1), Number(m1)-1, Number(d1), 0, 0, 0);
+    const [y2, m2, d2] = endDate.split('-');
+    const dEnd = new Date(Number(y2), Number(m2)-1, Number(d2), 0, 0, 0);
+    dEnd.setDate(dEnd.getDate() + 1);
+
+    let query = supabase
+      .from('packages')
+      .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
+      .gte('scanned_at', dStart.toISOString())
+      .lt('scanned_at', dEnd.toISOString())
+      .neq('status', 'EM_ROTA');
       
-      return query;
-    };
+    if (filterBase !== 'todas') query = query.eq('base_location', filterBase);
+    
+    const compId = forceCompId !== null ? forceCompId : (filterCompany !== 'todas' ? (await supabase.from('companies').select('id').eq('name', filterCompany).single()).data?.id : null);
+    if (compId) query = query.eq('company_id', compId);
+    
+    const drvId = forceDrvId !== null ? forceDrvId : (isEntregador ? driverId : filterDriverId);
+    if (drvId) query = query.eq('driver_id', drvId);
 
-    const { data, error } = await fetchAllPaginated(finalQueryFactory);
+    if (scannedAtCursor && idCursor) {
+      query = query.or(`scanned_at.lt.${scannedAtCursor},and(scanned_at.eq.${scannedAtCursor},id.lt.${idCursor})`);
+    }
 
-    if (!error && data) {
+    const { data, error } = await query
+      .order('scanned_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      console.error(error);
+      setIsLoadingMore(false);
+      return;
+    }
+
+    if (data.length < 50) setHasMoreTableData(false);
+
+    if (data.length > 0) {
+      const last = data[data.length - 1];
+      setLastCursor({ scannedAt: last.scanned_at, id: last.id });
+      
       const mapped = data.map((p: any) => ({
         id: p.id,
         driver: p.drivers?.name || 'Desconhecido',
@@ -138,49 +201,66 @@ export function Relatorios() {
         value: Number(p.delivery_value_snapshot || 0),
         bonus: Number(p.driver_bonus_snapshot || 0),
         base: p.base_location || 'Guapimirim',
-        status: p.status
+        status: p.status,
+        scanned_at: p.scanned_at
       }));
 
-      setDisplayedResults(mapped);
-      setShowResults(true);
+      if (!scannedAtCursor) setTableData(mapped);
+      else setTableData(prev => [...prev, ...mapped]);
     } else {
-      console.error(error);
-      alert('Erro ao buscar dados.');
+      if (!scannedAtCursor) setTableData([]);
     }
     
-    setIsSearching(false);
+    setIsLoadingMore(false);
   };
 
-  const totalDeliveries = displayedResults.length;
-  const totalConcluidas = displayedResults.filter(r => r.status === 'ENTREGUE').length;
-  const totalDevolvidas = displayedResults.filter(r => r.status === 'DEVOLVIDA').length;
-  const totalValue = displayedResults.reduce((sum, item) => sum + item.value + item.bonus, 0);
-  
-  const driversCount = displayedResults.reduce((acc, curr) => {
-    acc[curr.driver] = (acc[curr.driver] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  // Carrega modal sob demanda para não pesar
+  useEffect(() => {
+    if (!selectedDateDetails) return;
+    setIsLoadingModal(true);
+    setModalData([]);
+    
+    const [d, m, y] = selectedDateDetails.split('/');
+    const dStart = new Date(Number(y), Number(m)-1, Number(d), 0, 0, 0);
+    const dEnd = new Date(Number(y), Number(m)-1, Number(d), 0, 0, 0);
+    dEnd.setDate(dEnd.getDate() + 1);
 
-  const companyValue = displayedResults.reduce((acc, curr) => {
-    acc[curr.company] = (acc[curr.company] || 0) + curr.value + curr.bonus;
-    return acc;
-  }, {} as Record<string, number>);
-
-  const companyCount = displayedResults.reduce((acc, curr) => {
-    acc[curr.company] = (acc[curr.company] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  const uniqueDates = Array.from(new Set(displayedResults.map(r => r.date))).sort((a, b) => {
-    const parse = (str: string) => {
-      const parts = str.split('/');
-      if (parts.length === 3) {
-        return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`).getTime();
+    const runModal = async () => {
+      let query = supabase
+        .from('packages')
+        .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
+        .gte('scanned_at', dStart.toISOString())
+        .lt('scanned_at', dEnd.toISOString())
+        .neq('status', 'EM_ROTA');
+        
+      if (filterBase !== 'todas') query = query.eq('base_location', filterBase);
+      const effectiveDriverId = isEntregador ? driverId : filterDriverId;
+      if (effectiveDriverId) query = query.eq('driver_id', effectiveDriverId);
+      
+      if (filterCompany !== 'todas') {
+         const { data: cData } = await supabase.from('companies').select('id').eq('name', filterCompany).single();
+         if (cData?.id) query = query.eq('company_id', cData.id);
       }
-      return 0;
+      
+      const { data } = await query.order('scanned_at', { ascending: false }).limit(2000);
+      if (data) {
+        setModalData(data.map((p: any) => ({
+          id: p.id,
+          driver: p.drivers?.name || 'Desconhecido',
+          company: p.companies?.name || 'Desconhecida',
+          date: new Date(p.scanned_at).toLocaleDateString(),
+          time: new Date(p.scanned_at).toLocaleTimeString(),
+          value: Number(p.delivery_value_snapshot || 0),
+          bonus: Number(p.driver_bonus_snapshot || 0),
+          base: p.base_location || 'Guapimirim',
+          status: p.status
+        })));
+      }
+      setIsLoadingModal(false);
     };
-    return parse(a) - parse(b);
-  });
+    runModal();
+  }, [selectedDateDetails]);
+
   const [exportType, setExportType] = useState<'excel' | 'pdf' | null>(null);
 
   const generateCSV = (data: DeliveryRecord[]) => {
@@ -197,29 +277,74 @@ export function Relatorios() {
     return [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
   };
 
-  const handleExport = (action: 'download' | 'whatsapp') => {
-    if (displayedResults.length === 0) {
-      alert('Nenhum dado para exportar.');
+  const handleExport = async (action: 'download' | 'whatsapp') => {
+    if (!metrics || metrics.totalDeliveries === 0) {
+      alert('Nenhum dado para exportar no período filtrado.');
       return;
     }
     
-    if (action === 'download') {
-      if (exportType === 'excel') {
-        const csvContent = generateCSV(displayedResults);
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', 'relatorio_entregas.csv');
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } else {
-        window.print();
+    if (action === 'download' && exportType === 'excel') {
+      alert("Preparando o arquivo completo com todas as " + metrics.totalDeliveries + " entregas. Aguarde um momento...");
+      
+      let compId = null;
+      if (filterCompany !== 'todas') {
+        const companyData = await supabase.from('companies').select('id').eq('name', filterCompany).single();
+        compId = companyData.data?.id;
       }
+
+      const [y1, m1, d1] = startDate.split('-');
+      const dStart = new Date(Number(y1), Number(m1)-1, Number(d1), 0, 0, 0);
+      const [y2, m2, d2] = endDate.split('-');
+      const dEnd = new Date(Number(y2), Number(m2)-1, Number(d2), 0, 0, 0);
+      dEnd.setDate(dEnd.getDate() + 1);
+
+      const finalQueryFactory = () => {
+        let query = supabase
+          .from('packages')
+          .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, base_location, companies(name), drivers(name, id)')
+          .gte('scanned_at', dStart.toISOString())
+          .lt('scanned_at', dEnd.toISOString())
+          .neq('status', 'EM_ROTA');
+          
+        if (filterBase !== 'todas') query = query.eq('base_location', filterBase);
+        const effectiveDriverId = isEntregador ? driverId : filterDriverId;
+        if (effectiveDriverId) query = query.eq('driver_id', effectiveDriverId);
+        if (compId) query = query.eq('company_id', compId);
+        
+        return query;
+      };
+
+      const allData: DeliveryRecord[] = [];
+      await fetchStreamingPaginated(finalQueryFactory, (chunkData) => {
+        const mapped = chunkData.map((p: any) => ({
+          id: p.id,
+          driver: p.drivers?.name || 'Desconhecido',
+          company: p.companies?.name || 'Desconhecida',
+          date: new Date(p.scanned_at).toLocaleDateString(),
+          time: new Date(p.scanned_at).toLocaleTimeString(),
+          value: Number(p.delivery_value_snapshot || 0),
+          bonus: Number(p.driver_bonus_snapshot || 0),
+          base: p.base_location || 'Guapimirim',
+          status: p.status
+        }));
+        allData.push(...mapped);
+      });
+
+      const csvContent = generateCSV(allData);
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'relatorio_entregas_completo.csv');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+    } else if (action === 'download' && exportType === 'pdf') {
+      window.print();
     } else {
       const title = exportType === 'excel' ? 'Planilha' : 'PDF';
-      const text = `*Relatório de Entregas (${title})*\n\n*Total de Entregas:* ${totalDeliveries}\n*Concluídas:* ${totalConcluidas}\n*Devolvidas:* ${totalDevolvidas}\n*Faturamento Total:* R$ ${totalValue.toFixed(2).replace('.', ',')}\n\n(Gerado via Painel Jackarlos)`;
+      const text = `*Relatório de Entregas (${title})*\n\n*Total de Entregas:* ${metrics.totalDeliveries}\n*Concluídas:* ${metrics.totalConcluidas}\n*Devolvidas:* ${metrics.totalDevolvidas}\n*Faturamento Total:* R$ ${metrics.totalValue.toFixed(2).replace('.', ',')}\n\n(Gerado via Painel Jackarlos)`;
       const encoded = encodeURIComponent(text);
       window.open(`https://wa.me/?text=${encoded}`, '_blank');
     }
@@ -335,7 +460,7 @@ export function Relatorios() {
 
                 <Dialog>
                   <DialogTrigger asChild>
-                    <Button type="button" variant="outline" className="gap-2 bg-background hover:bg-success hover:text-success-foreground hover:border-success transition-colors" onClick={() => setExportType('excel')} disabled={displayedResults.length === 0}>
+                    <Button type="button" variant="outline" className="gap-2 bg-background hover:bg-success hover:text-success-foreground hover:border-success transition-colors" onClick={() => setExportType('excel')} disabled={!metrics || metrics.totalDeliveries === 0}>
                       <FileSpreadsheet className="h-4 w-4" />
                       Exportar Excel
                     </Button>
@@ -360,7 +485,7 @@ export function Relatorios() {
         </Card>
       </div>
 
-      {showResults && (
+      {showResults && metrics && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Card className="bg-card">
@@ -368,7 +493,7 @@ export function Relatorios() {
                 <div className="flex items-center">
                   <div>
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Total Entregas</p>
-                    <p className="font-bold text-xl">{totalDeliveries}</p>
+                    <p className="font-bold text-xl">{metrics.totalDeliveries}</p>
                   </div>
                 </div>
               </CardContent>
@@ -378,7 +503,7 @@ export function Relatorios() {
                 <div className="flex items-center">
                   <div>
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Concluídas</p>
-                    <p className="font-bold text-xl text-success">{totalConcluidas}</p>
+                    <p className="font-bold text-xl text-success">{metrics.totalConcluidas}</p>
                   </div>
                 </div>
               </CardContent>
@@ -388,7 +513,7 @@ export function Relatorios() {
                 <div className="flex items-center">
                   <div>
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Devolvidas</p>
-                    <p className="font-bold text-xl text-destructive">{totalDevolvidas}</p>
+                    <p className="font-bold text-xl text-destructive">{metrics.totalDevolvidas}</p>
                   </div>
                 </div>
               </CardContent>
@@ -398,7 +523,7 @@ export function Relatorios() {
                 <div className="flex items-center">
                   <div>
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Valor Total</p>
-                    <p className="font-bold text-xl">R$ {totalValue.toFixed(2).replace('.', ',')}</p>
+                    <p className="font-bold text-xl">R$ {metrics.totalValue.toFixed(2).replace('.', ',')}</p>
                   </div>
                 </div>
               </CardContent>
@@ -409,7 +534,7 @@ export function Relatorios() {
                   <div className="flex-1 overflow-hidden">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Valor por Empresa</p>
                     <div className="flex flex-wrap gap-2 text-xs font-bold mt-1">
-                      {Object.entries(companyValue).map(([emp, val]: [string, any]) => (
+                      {Object.entries(metrics.companyValue).map(([emp, val]: [string, any]) => (
                         <span key={emp}>{emp.substring(0,3)}: R${val.toFixed(0)}</span>
                       ))}
                     </div>
@@ -423,7 +548,7 @@ export function Relatorios() {
                   <div className="flex-1 overflow-hidden">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Qtd. por Empresa</p>
                     <div className="flex flex-wrap gap-2 text-xs font-bold mt-1">
-                      {Object.entries(companyCount).map(([emp, count]) => (
+                      {Object.entries(metrics.companyCount).map(([emp, count]) => (
                         <span key={emp} className="inline-flex items-center gap-1">
                           <span className="text-muted-foreground">{emp.substring(0, 3)}:</span>
                           <span>{count} un</span>
@@ -440,12 +565,12 @@ export function Relatorios() {
                   <div className="flex-1 overflow-hidden">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Dias Carregados</p>
                     <div className="flex items-end gap-2 mt-1">
-                      <p className="font-bold text-xl">{uniqueDates.length}</p>
+                      <p className="font-bold text-xl">{metrics.uniqueDates.length}</p>
                       <span className="text-xs text-muted-foreground mb-1">viagem(ns)</span>
                     </div>
-                    {uniqueDates.length > 0 && (
+                    {metrics.uniqueDates.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2 max-h-16 overflow-y-auto pr-1">
-                        {uniqueDates.map(d => (
+                        {metrics.uniqueDates.map(d => (
                            <span 
                              key={d} 
                              onClick={() => setSelectedDateDetails(d)}
@@ -467,7 +592,7 @@ export function Relatorios() {
             <CardHeader className="border-b border-border bg-muted/20 pb-4">
               <CardTitle className="text-lg font-bold flex items-center gap-2">
                 <FileText className="h-5 w-5 text-primary" />
-                Detalhamento
+                Detalhamento (Exibindo página atual)
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
@@ -484,8 +609,8 @@ export function Relatorios() {
                     </tr>
                   </thead>
                   <tbody>
-                    {displayedResults.map((item, index) => (
-                      <tr key={index} className="border-b border-border hover:bg-muted/20 transition-colors">
+                    {tableData.map((item, index) => (
+                      <tr key={item.id + index} className="border-b border-border hover:bg-muted/20 transition-colors">
                         <td className="px-6 py-4 text-foreground">
                           <div className="font-medium">{item.date}</div>
                           <div className="text-xs text-muted-foreground">{item.time}</div>
@@ -499,9 +624,28 @@ export function Relatorios() {
                         <td className="px-6 py-4 text-right font-bold text-success">R$ {(item.value + item.bonus).toFixed(2).replace('.', ',')}</td>
                       </tr>
                     ))}
+                    {tableData.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="text-center py-6 text-muted-foreground">Nenhuma entrega no período.</td>
+                      </tr>
+                    )}
                   </tbody>
                 </table></div>
               </div>
+              
+              {hasMoreTableData && tableData.length >= 50 && (
+                <div className="p-4 border-t border-border flex justify-center bg-muted/10">
+                  <Button 
+                    variant="outline" 
+                    onClick={() => loadTablePage(lastCursor?.scannedAt, lastCursor?.id)}
+                    disabled={isLoadingMore}
+                    className="gap-2"
+                  >
+                    {isLoadingMore ? 'Carregando...' : 'Carregar próxima página (50 registros)'}
+                    {!isLoadingMore && <ChevronRight className="w-4 h-4" />}
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -513,9 +657,7 @@ export function Relatorios() {
           <DialogHeader>
             <DialogTitle>
               Entregas do dia {selectedDateDetails} 
-              <span className="ml-2 text-muted-foreground text-sm font-normal">
-                (Total: {displayedResults.filter(r => r.date === selectedDateDetails).length} entregas)
-              </span>
+              {isLoadingModal && <span className="ml-2 text-sm text-primary">Carregando...</span>}
             </DialogTitle>
           </DialogHeader>
           <div className="overflow-auto flex-1 mt-4 border border-border rounded-md">
@@ -530,8 +672,8 @@ export function Relatorios() {
                 </tr>
               </thead>
               <tbody>
-                {displayedResults.filter(r => r.date === selectedDateDetails).map((item, index) => (
-                  <tr key={index} className="border-b border-border hover:bg-muted/20">
+                {modalData.map((item, index) => (
+                  <tr key={item.id + index} className="border-b border-border hover:bg-muted/20">
                     <td className="px-4 py-3 text-muted-foreground">{item.time}</td>
                     <td className="px-4 py-3 font-bold text-foreground">{item.driver}</td>
                     <td className="px-4 py-3 text-muted-foreground">{item.company}</td>
@@ -539,6 +681,9 @@ export function Relatorios() {
                     <td className="px-4 py-3 text-right font-bold text-success">R$ {(item.value + item.bonus).toFixed(2).replace('.', ',')}</td>
                   </tr>
                 ))}
+                {!isLoadingModal && modalData.length === 0 && (
+                  <tr><td colSpan={5} className="p-4 text-center">Nenhuma entrega ou erro ao carregar.</td></tr>
+                )}
               </tbody>
             </table>
           </div>

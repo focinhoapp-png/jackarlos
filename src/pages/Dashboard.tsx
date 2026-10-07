@@ -32,27 +32,15 @@ function ConferenteDashboard() {
 
   useEffect(() => {
     fetchConferenteData();
-
-    // Realtime: re-fetch sempre que packages mudar (insert/update/delete)
-    const channel = supabase
-      .channel('conferente-packages-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'packages' }, () => {
-        fetchConferenteData();
-      })
-      .subscribe();
-
-    // Fallback: refresh a cada 60 segundos
-    const interval = setInterval(() => fetchConferenteData(), 60_000);
-
-    return () => {
-      supabase.removeChannel(channel);
-      clearInterval(interval);
-    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchConferenteData = async () => {
+    const startTime = performance.now();
+    console.log('[Dashboard Conferente] Iniciando carregamento...');
+    let queriesCount = 0;
     setIsLoading(true);
+    queriesCount++;
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setIsLoading(false); return; }
 
@@ -61,71 +49,22 @@ function ConferenteDashboard() {
     const startOfWeek  = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-    const { data: pkgs } = await fetchAllPaginated(() => supabase
-      .from('packages')
-      .select('id, scanned_at, driver_id, drivers(name), companies(name)')
-      .eq('scanned_by', user.id)
-      .gte('scanned_at', startOfMonth)
-    );
+    queriesCount++;
+    const { data, error } = await supabase.rpc('get_conferente_dashboard_metrics', {
+      p_start_of_day: startOfDay,
+      p_start_of_week: startOfWeek,
+      p_start_of_month: startOfMonth,
+      p_user_id: user.id
+    });
 
-    if (pkgs) {
-      let scannedToday = 0;
-      let scannedWeek = 0;
-      const scannedMonth = pkgs.length;
-
-      const driversToday = new Set<string>();
-      const driversMonth = new Set<string>();
-      const companiesToday = new Set<string>();
-      const hourCounts: Record<string, number> = {};
-      const driverCountToday: Record<string, { name: string; count: number }> = {};
-
-      pkgs.forEach((p: any) => {
-        const iso = new Date(p.scanned_at).toISOString();
-
-        if (iso >= startOfMonth) {
-          if (p.driver_id) driversMonth.add(p.driver_id);
-        }
-        if (iso >= startOfWeek) {
-          scannedWeek++;
-        }
-        if (iso >= startOfDay) {
-          scannedToday++;
-          if (p.driver_id) {
-            driversToday.add(p.driver_id);
-            const dName = p.drivers?.name || p.driver_id;
-            if (!driverCountToday[p.driver_id]) {
-              driverCountToday[p.driver_id] = { name: dName, count: 0 };
-            }
-            driverCountToday[p.driver_id].count++;
-          }
-          if (p.companies?.name) companiesToday.add(p.companies.name);
-          const hour = new Date(p.scanned_at).getHours().toString().padStart(2, '0') + ':00';
-          hourCounts[hour] = (hourCounts[hour] || 0) + 1;
-        }
-      });
-
-      const hourlyData = Object.entries(hourCounts)
-        .map(([time, pacotes]) => ({ time, pacotes }))
-        .sort((a, b) => a.time.localeCompare(b.time));
-
-      const driversRankToday = Object.values(driverCountToday)
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5);
-
-      setMetrics({
-        scannedToday,
-        scannedWeek,
-        scannedMonth,
-        driversLoadedToday: driversToday.size,
-        driversLoadedMonth: driversMonth.size,
-        companiesHandledToday: companiesToday.size,
-        hourlyData,
-        driversRankToday,
-      });
+    if (!error && data) {
+      setMetrics(data);
     }
 
     setIsLoading(false);
     setLastUpdated(new Date());
+    const totalTime = performance.now() - startTime;
+    console.log(`[Dashboard Conferente] Carregamento concluído em ${totalTime.toFixed(2)}ms. Consultas realizadas: ${queriesCount}`);
   };
 
   if (isLoading) {
@@ -144,8 +83,8 @@ function ConferenteDashboard() {
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            Ao vivo
+            <span className="w-2 h-2 rounded-full bg-green-500" />
+            Sincronizado
           </span>
           · Última atualização: {lastUpdated.toLocaleTimeString('pt-BR')}
         </div>
@@ -309,33 +248,17 @@ export function Dashboard() {
 
   useEffect(() => {
     initializeDashboard();
-
-    // Realtime: re-fetch sempre que packages mudar (insert/update/delete)
-    const channel = supabase
-      .channel('admin-packages-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'packages' }, () => {
-        setLastUpdated(new Date());
-        initializeDashboard();
-      })
-      .subscribe();
-
-    // Fallback: refresh a cada 60 segundos
-    const interval = setInterval(() => {
-      setLastUpdated(new Date());
-      initializeDashboard();
-    }, 60_000);
-
-    return () => {
-      supabase.removeChannel(channel);
-      clearInterval(interval);
-    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const initializeDashboard = async () => {
+    const startTime = performance.now();
+    console.log('[Dashboard Admin] Iniciando carregamento...');
+    let queriesCount = 0;
     setIsLoading(true);
     
     // 1. Uma única chamada para Auth e Role
+    queriesCount++;
     const { data: { user } } = await supabase.auth.getUser();
     
     if (!user) {
@@ -343,6 +266,7 @@ export function Dashboard() {
       return;
     }
 
+    queriesCount++;
     const { data: userData } = await supabase.from('users').select('role').eq('id', user.id).single();
     
     if (userData?.role === 'CONFERENTE') {
@@ -357,6 +281,7 @@ export function Dashboard() {
     if (userData?.role === 'ENTREGADOR') {
       setIsUserEntregador(true);
       isEntregador = true;
+      queriesCount++;
       const { data: driverData } = await supabase.from('drivers').select('id').eq('user_id', user.id).single();
       if (driverData) driverId = driverData.id;
     }
@@ -367,78 +292,33 @@ export function Dashboard() {
     const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-    const packagesQueryFactory = () => {
-      let q = supabase.from('packages')
-        .select('id, scanned_at, status, delivery_value_snapshot, driver_bonus_snapshot, driver_id, companies(name), drivers(name)')
-        .gte('scanned_at', startOfMonth);
-        
-      if (isEntregador && driverId) {
-        q = q.eq('driver_id', driverId);
-      }
-      return q;
-    };
+    queriesCount++;
+    const { data, error } = await supabase.rpc('get_admin_dashboard_metrics', {
+      p_start_of_day: startOfDay,
+      p_start_of_week: startOfWeek,
+      p_start_of_month: startOfMonth,
+      p_driver_id: isEntregador ? driverId : null
+    });
 
-    const [packagesRes, driversRes, companiesRes] = await Promise.all([
-      fetchAllPaginated(packagesQueryFactory),
-      supabase.from('drivers').select('id', { count: 'exact' }).eq('status', true),
-      supabase.from('companies').select('id', { count: 'exact' }).eq('status', true)
-    ]);
-
-    if (packagesRes.data) {
-      const pkgs = packagesRes.data;
-
-      let todayDelivs = 0, todayVal = 0, completedToday = 0;
-      let weekDelivs = 0, monthDelivs = 0, monthVal = 0, returnedMonth = 0;
-
-      const compCounts: Record<string, number> = {};
-      const hourCounts: Record<string, number> = {};
-      const driverCounts: Record<string, { name: string; deliveries: number; amount: number }> = {};
-
-      pkgs.forEach((p: any) => {
-        const pDate = new Date(p.scanned_at).toISOString();
-        const value = Number(p.delivery_value_snapshot || 0);
-
-        if (pDate >= startOfMonth) { 
-          monthDelivs++; 
-          monthVal += value; 
-          if (p.status === 'DEVOLVIDA') returnedMonth++;
-        }
-        if (pDate >= startOfWeek)  { weekDelivs++; }
-        if (pDate >= startOfDay) {
-          todayDelivs++;
-          todayVal += value;
-          if (p.status === 'ENTREGUE') completedToday++;
-          const hour = new Date(p.scanned_at).getHours().toString().padStart(2, '0') + ':00';
-          hourCounts[hour] = (hourCounts[hour] || 0) + 1;
-        }
-
-        if (p.companies?.name) compCounts[p.companies.name] = (compCounts[p.companies.name] || 0) + 1;
-
-        if (p.drivers?.name) {
-          const dName = p.drivers.name;
-          if (!driverCounts[dName]) driverCounts[dName] = { name: dName, deliveries: 0, amount: 0 };
-          driverCounts[dName].deliveries++;
-          driverCounts[dName].amount += (Number(p.driver_bonus_snapshot || 0) + value);
-        }
-      });
-
+    if (!error && data) {
       setMetrics({
-        todayDeliveries: todayDelivs,
-        todayValue: todayVal,
-        completedToday,
-        weekDeliveries: weekDelivs,
-        monthDeliveries: monthDelivs,
-        monthValue: monthVal,
-        activeDrivers: driversRes.count || 0,
-        companiesCount: companiesRes.count || 0,
-        returnedMonth
+        todayDeliveries: data.todayDeliveries,
+        todayValue: data.todayValue,
+        activeDrivers: data.activeDrivers,
+        completedToday: data.completedToday,
+        weekDeliveries: data.weekDeliveries,
+        monthDeliveries: data.monthDeliveries,
+        monthValue: data.monthValue,
+        companiesCount: data.companiesCount,
+        returnedMonth: data.returnedMonth
       });
-
-      setCompanyData(Object.entries(compCounts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value));
-      setHourlyData(Object.entries(hourCounts).map(([time, entregas]) => ({ time, entregas })).sort((a, b) => a.time.localeCompare(b.time)));
-      setTopDrivers(Object.values(driverCounts).sort((a, b) => b.deliveries - a.deliveries).slice(0, 5));
+      setCompanyData(data.companyData);
+      setHourlyData(data.hourlyData);
+      setTopDrivers(data.topDrivers);
     }
     setIsLoading(false);
+    const totalTime = performance.now() - startTime;
+    console.log(`[Dashboard Admin] Carregamento concluído em ${totalTime.toFixed(2)}ms. Consultas realizadas: ${queriesCount}`);
   };
 
   // Renderiza painel do conferente separado
@@ -454,8 +334,8 @@ export function Dashboard() {
         <h1 className="text-2xl font-bold tracking-tight">Detalhamento</h1>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            Ao vivo
+            <span className="w-2 h-2 rounded-full bg-green-500" />
+            Sincronizado
           </span>
           · Última atualização: {lastUpdated.toLocaleTimeString('pt-BR')}
         </div>

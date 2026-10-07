@@ -9,6 +9,10 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
+if (typeof window !== 'undefined') {
+  (window as any).supabase = supabase;
+}
+
 /**
  * Utilitário para buscar todos os registros de uma query paginada,
  * ignorando o limite máximo (max-rows) imposto pelo Supabase.
@@ -69,3 +73,69 @@ export async function fetchAllPaginated(queryFactory: () => any, step = 1000, si
   return { data: signal?.aborted ? [] : allData, error: fetchError };
 }
 
+
+/**
+ * Utilitário para buscar registros progressivamente e atualizar a interface sem travar.
+ */
+export async function fetchStreamingPaginated(
+  queryFactory: () => any, 
+  onChunk: (data: any[]) => void,
+  step = 1000, 
+  signal?: AbortSignal
+) {
+  let from = 0;
+  let hasMore = true;
+  let fetchError = null;
+  const concurrency = 3;
+
+  while (hasMore) {
+    if (signal?.aborted) break;
+
+    const promises = [];
+    for (let i = 0; i < concurrency; i++) {
+      let query = queryFactory();
+      if (signal && typeof query.abortSignal === 'function') {
+        query = query.abortSignal(signal);
+      }
+      promises.push(query.range(from + i * step, from + (i + 1) * step - 1));
+    }
+    
+    try {
+      const results = await Promise.all(promises);
+      let chunkData: any[] = [];
+      
+      for (const res of results) {
+        if (signal?.aborted) break;
+        if (res.error) {
+          if (res.error.message?.includes('aborted')) break;
+          fetchError = res.error;
+          hasMore = false;
+          break;
+        }
+        if (res.data) {
+          chunkData = chunkData.concat(res.data);
+          if (res.data.length < step) {
+            hasMore = false;
+            break;
+          }
+        } else {
+          hasMore = false;
+          break;
+        }
+      }
+      
+      if (chunkData.length > 0 && !signal?.aborted) {
+        onChunk(chunkData);
+      }
+    } catch (err: any) {
+      if (err.name === 'AbortError') break;
+      fetchError = err;
+      break;
+    }
+    
+    if (fetchError || signal?.aborted) break;
+    from += step * concurrency;
+  }
+
+  return { error: fetchError };
+}

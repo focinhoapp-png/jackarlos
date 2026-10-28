@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { User, CheckCircle2, Truck, GripVertical, Plus, Building2, Package, ChevronUp, ChevronDown, Search } from 'lucide-react';
+import { User, CheckCircle2, Truck, GripVertical, Plus, Building2, Package, ChevronUp, ChevronDown, Search, Users, ListOrdered, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { Card, CardContent } from '@/src/components/ui/card';
 import { Button } from '@/src/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/src/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/src/components/ui/select";
 import { Input } from "@/src/components/ui/input";
-import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
+import { supabase } from '@/src/lib/supabase';
 import { logAction } from '@/src/lib/audit';
 
 interface Company {
@@ -44,8 +44,17 @@ export function ScannerPanel() {
   const [adjustingCompany, setAdjustingCompany] = useState<string | null>(null);
   const [returnQty, setReturnQty] = useState<Record<string, string>>({});
   const [finalizing, setFinalizing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const isSubmittingRef = React.useRef(false);
+  const [loadingDriverId, setLoadingDriverId] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserRole, setCurrentUserRole] = useState<string>('');
+  const [currentUserInfo, setCurrentUserInfo] = useState<{ id: string; name: string; email: string; role: string } | null>(null);
+
+  // Controle de carregamento e concorrência para evitar flash de dados incorretos e race conditions
+  const activeQueryIdRef = React.useRef(0);
+  const [isLoadingDeliveries, setIsLoadingDeliveries] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [queue, setQueue] = useState<DriverInfo[]>(() => {
     const saved = localStorage.getItem('driverQueueV3');
@@ -53,84 +62,304 @@ export function ScannerPanel() {
     return [];
   });
 
-  const [selectedBase, setSelectedBase] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'disponiveis' | 'fila' | 'em_rota'>('disponiveis');
+  // Sempre abre com 'Nenhuma' selecionada por padrão ao entrar no módulo de Carregamentos
+  const [selectedBase, setSelectedBase] = useState<string>('Nenhuma');
   const [driver, setDriver] = useState<DriverInfo | null>(null);
-  const [scannedItems, setScannedItems] = useState<ScannedItem[]>([]);
   const [companyCounts, setCompanyCounts] = useState<Record<string, number>>({});
   // Bônus por empresa do entregador selecionado: { [company_id]: bonus_amount }
   const [driverBonusMap, setDriverBonusMap] = useState<Record<string, number>>({});
   
   const [lastScanStatus, setLastScanStatus] = useState<'idle' | 'success' | 'error'>('idle');
-  const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
+  const [draggedDriverId, setDraggedDriverId] = useState<string | null>(null);
 
+  const handleBaseChange = (base: string) => {
+    setSelectedBase(base);
+    if (base === 'Nenhuma' || !base) {
+      setActiveDeliveries([]);
+      setIsLoadingDeliveries(false);
+    } else {
+      loadActiveDeliveries(base);
+    }
+  };
+
+  /** Agrupa os pacotes em rota por entregador em memória, sem overhead de joins relacionais */
+  const groupPackagesByDriver = (
+    packages: any[],
+    driversList: DriverInfo[],
+    companiesList: Company[]
+  ) => {
+    if (!packages || packages.length === 0) return [];
+
+    const driversMap = new Map(driversList.map(d => [String(d.id), d]));
+    const companiesMap = new Map(companiesList.map(c => [String(c.id), c]));
+
+    const grouped = packages.reduce((acc: any, pkg: any) => {
+      const drv = driversMap.get(String(pkg.driver_id));
+      const comp = companiesMap.get(String(pkg.company_id));
+
+      if (!acc[pkg.driver_id]) {
+        acc[pkg.driver_id] = {
+          id: pkg.driver_id,
+          driverName: drv?.name || 'Desconhecido',
+          vehicle: drv?.vehicle_type || '-',
+          plate: drv?.vehicle_plate || '-',
+          baseLocation: pkg.base_location || drv?.base_location || null,
+          scannedBy: pkg.scanned_by,
+          scannedItems: []
+        };
+      } else if (!acc[pkg.driver_id].baseLocation && (pkg.base_location || drv?.base_location)) {
+        acc[pkg.driver_id].baseLocation = pkg.base_location || drv?.base_location;
+      }
+
+      acc[pkg.driver_id].scannedItems.push({
+        code: pkg.barcode,
+        company: comp?.name || 'Desconhecida'
+      });
+      return acc;
+    }, {});
+
+    return Object.values(grouped);
+  };
+
+  /** Consulta de alta performance dos pacotes com status EM_ROTA da base selecionada utilizando o índice B-Tree idx_packages_driver_id */
+  const fetchActivePackagesFromDb = async (targetBase?: string, driversList?: DriverInfo[]): Promise<any[]> => {
+    if (!targetBase || targetBase === 'Nenhuma') {
+      return [];
+    }
+
+    const t0 = performance.now();
+    console.info(`[Carregamentos Diagnostic] Iniciando busca otimizada de pacotes EM_ROTA para base: "${targetBase}"`);
+
+    // Obtém os motoristas da base para acionar o índice idx_packages_driver_id em vez de sequential scan
+    let baseDrivers = (driversList && driversList.length > 0 ? driversList : allDrivers).filter(
+      d => (d.base_location || '').toLowerCase() === targetBase.toLowerCase()
+    );
+
+    // Fallback de segurança se allDrivers ainda não foi setado no primeiro render
+    if (baseDrivers.length === 0) {
+      const { data: dbDrivers } = await supabase
+        .from('drivers')
+        .select('id, name, vehicle_type, vehicle_plate, base_location, bonus_per_delivery, status')
+        .ilike('base_location', targetBase);
+      if (dbDrivers && dbDrivers.length > 0) {
+        baseDrivers = dbDrivers as DriverInfo[];
+      }
+    }
+
+    if (baseDrivers.length === 0) {
+      console.info(`[Carregamentos Diagnostic] Nenhum motorista encontrado na base "${targetBase}". Retornando vazio.`);
+      return [];
+    }
+
+    // Consulta concorrente para cada motorista da base usando idx_packages_driver_id + status
+    const driverQueries = baseDrivers.map(async (d) => {
+      let driverPkgs: any[] = [];
+      let from = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('packages')
+          .select('barcode, driver_id, company_id, base_location, scanned_by')
+          .eq('status', 'EM_ROTA')
+          .eq('driver_id', d.id)
+          .range(from, from + 999);
+
+        if (error) {
+          console.error(`[Carregamentos Diagnostic] Erro ao buscar pacotes do motorista ${d.name}:`, error);
+          break;
+        }
+
+        if (data && data.length > 0) {
+          driverPkgs.push(...data);
+          if (data.length < 1000) {
+            hasMore = false;
+          } else {
+            from += 1000;
+          }
+        } else {
+          hasMore = false;
+        }
+      }
+
+      return driverPkgs;
+    });
+
+    const results = await Promise.all(driverQueries);
+    const allPkgs = results.flat();
+
+    const totalMs = (performance.now() - t0).toFixed(0);
+    console.info(`[Carregamentos Diagnostic] Total pacotes em rota carregados para base "${targetBase}": ${allPkgs.length} pacotes em ${totalMs}ms (${baseDrivers.length} entregadores consultados concorrentemente)`);
+
+    return allPkgs;
+  };
+
+  /** Busca inicial orquestrada: metadados estruturais leves primeiro, depois pacotes da base ativa */
   useEffect(() => {
-    fetchInitialData();
-    loadActiveDeliveries();
+    let isMounted = true;
+
+    const loadAllInitialData = async () => {
+      const queryId = ++activeQueryIdRef.current;
+      setLoadError(null);
+
+      try {
+        const t0 = performance.now();
+        console.info('[Carregamentos Diagnostic] Iniciando loadAllInitialData...');
+
+        // 1. Carrega primeiro as tabelas estruturais leves em paralelo (< 200ms)
+        const tMeta0 = performance.now();
+        const [driversRes, companiesRes, basesRes] = await Promise.all([
+          supabase.from('drivers').select('id, name, vehicle_type, vehicle_plate, base_location, bonus_per_delivery, status').order('name'),
+          supabase.from('companies').select('id, name, value_per_delivery, logo_url').eq('status', true),
+          supabase.from('bases').select('name').eq('status', true).order('name')
+        ]);
+
+        if (driversRes.error) throw new Error('Erro ao carregar entregadores: ' + driversRes.error.message);
+        if (companiesRes.error) throw new Error('Erro ao carregar empresas: ' + companiesRes.error.message);
+        if (basesRes.error) throw new Error('Erro ao carregar bases: ' + basesRes.error.message);
+
+        // Descarte se outra requisição mais nova foi iniciada
+        if (!isMounted || queryId !== activeQueryIdRef.current) return;
+
+        const driversData = (driversRes.data as DriverInfo[]) || [];
+        const companiesData = (companiesRes.data as Company[]) || [];
+        const basesData = (basesRes.data ? basesRes.data.map((b: any) => b.name) : []) as string[];
+
+        setAllDrivers(driversData);
+        setCompanies(companiesData);
+        setBases(basesData);
+
+        const initialCounts: Record<string, number> = {};
+        companiesData.forEach(c => { initialCounts[c.name] = 0; });
+        setCompanyCounts(initialCounts);
+
+        console.info(`[Carregamentos Diagnostic] Metadados carregados em ${(performance.now() - tMeta0).toFixed(0)}ms: ${driversData.length} entregadores, ${companiesData.length} empresas, ${basesData.length} bases`);
+
+        // Sempre inicia com 'Nenhuma' selecionada por padrão ao entrar no módulo de Carregamentos
+        setSelectedBase('Nenhuma');
+        setActiveDeliveries([]);
+        console.info(`[Carregamentos Diagnostic] Módulo aberto com "Nenhuma" selecionada por padrão. Carga inicial concluída em ${(performance.now() - t0).toFixed(0)}ms.`);
+        return;
+
+      } catch (err: any) {
+        if (isMounted && queryId === activeQueryIdRef.current) {
+          console.error('[Carregamentos Diagnostic] Erro na inicialização dos dados:', err);
+          setLoadError(err.message || 'Falha ao conectar com o banco de dados.');
+        }
+      } finally {
+        if (isMounted && queryId === activeQueryIdRef.current) {
+          setIsLoadingDeliveries(false);
+        }
+      }
+    };
+
+    loadAllInitialData();
+
+    // Carrega dados do usuário autenticado para auditoria
     supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (user) {
+      if (user && isMounted) {
         setCurrentUserId(user.id);
-        const { data: ud } = await supabase.from('users').select('role').eq('id', user.id).single();
-        if (ud?.role) setCurrentUserRole(ud.role);
+        const { data: ud } = await supabase.from('users').select('name, email, role').eq('id', user.id).single();
+        if (ud?.role && isMounted) setCurrentUserRole(ud.role);
+        if (ud && isMounted) {
+          setCurrentUserInfo({
+            id: user.id,
+            name: ud.name || '',
+            email: ud.email || user.email || '',
+            role: ud.role || ''
+          });
+        }
       }
     });
+
+    return () => { isMounted = false; };
   }, []);
 
   const fetchInitialData = async () => {
     const [driversRes, companiesRes, basesRes] = await Promise.all([
-      supabase.from('drivers').select('*').eq('status', true),
+      supabase.from('drivers').select('id, name, vehicle_type, vehicle_plate, base_location, bonus_per_delivery, status').order('name'),
       supabase.from('companies').select('id, name, value_per_delivery, logo_url').eq('status', true),
       supabase.from('bases').select('name').eq('status', true).order('name')
     ]);
-    if (driversRes.data) setAllDrivers(driversRes.data as any[]);
-    if (companiesRes.data) {
-      setCompanies(companiesRes.data as any[]);
-      const initialCounts: Record<string, number> = {};
-      companiesRes.data.forEach(c => { initialCounts[c.name] = 0; });
-      setCompanyCounts(initialCounts);
+
+    if (driversRes.error) throw new Error(driversRes.error.message);
+    if (companiesRes.error) throw new Error(companiesRes.error.message);
+
+    const driversData = (driversRes.data as DriverInfo[]) || [];
+    const companiesData = (companiesRes.data as Company[]) || [];
+
+    setAllDrivers(driversData);
+    setCompanies(companiesData);
+
+    const initialCounts: Record<string, number> = {};
+    companiesData.forEach(c => { initialCounts[c.name] = 0; });
+    setCompanyCounts(initialCounts);
+
+    if (basesRes.data && basesRes.data.length > 0) {
+      const baseNames = basesRes.data.map((b: any) => b.name);
+      setBases(baseNames);
     }
-    if (basesRes.data) setBases(basesRes.data.map((b: any) => b.name));
+
+    return {
+      drivers: driversData,
+      companies: companiesData,
+      bases: basesRes.data ? basesRes.data.map((b: any) => b.name) : []
+    };
   };
 
-  const loadActiveDeliveries = async () => {
-    const { data: allData, error: fetchError } = await fetchAllPaginated(() => supabase
-      .from('packages')
-      .select('driver_id, barcode, company_id, scanned_at, scanned_by, drivers(name, vehicle_type, vehicle_plate), companies(name)')
-      .eq('status', 'EM_ROTA')
-    );
+  /** Atualização sob demanda das entregas ativas (após finalização, devolução ou clique em atualizar) */
+  const loadActiveDeliveries = async (
+    targetBaseOverride?: string,
+    customDrivers?: DriverInfo[],
+    customCompanies?: Company[]
+  ): Promise<any[]> => {
+    const baseToQuery = targetBaseOverride !== undefined ? targetBaseOverride : selectedBase;
 
-    if (!fetchError && allData) {
-      const grouped = allData.reduce((acc: any, pkg: any) => {
-        if (!acc[pkg.driver_id]) {
-          acc[pkg.driver_id] = {
-            id: pkg.driver_id,
-            driverName: pkg.drivers?.name,
-            vehicle: pkg.drivers?.vehicle_type,
-            plate: pkg.drivers?.vehicle_plate,
-            scannedBy: pkg.scanned_by, // conferente que carregou
-            scannedItems: []
-          };
-        }
-        acc[pkg.driver_id].scannedItems.push({
-          code: pkg.barcode,
-          company: pkg.companies?.name,
-          time: new Date(pkg.scanned_at).toLocaleTimeString()
-        });
-        return acc;
-      }, {});
-      const result = Object.values(grouped) as any[];
-      setActiveDeliveries(result);
-      return result;
+    if (!baseToQuery || baseToQuery === 'Nenhuma') {
+      setActiveDeliveries([]);
+      setIsLoadingDeliveries(false);
+      return [];
     }
-    return [];
+
+    const queryId = ++activeQueryIdRef.current;
+    setIsLoadingDeliveries(true);
+    setLoadError(null);
+
+    try {
+      const driversToUse = customDrivers || allDrivers;
+      const companiesToUse = customCompanies || companies;
+
+      const activePkgs = await fetchActivePackagesFromDb(baseToQuery, driversToUse);
+
+      if (queryId !== activeQueryIdRef.current) {
+        return [];
+      }
+
+      const mapped = groupPackagesByDriver(activePkgs, driversToUse, companiesToUse);
+      setActiveDeliveries(mapped);
+      return mapped;
+    } catch (err: any) {
+      if (queryId === activeQueryIdRef.current) {
+        console.error('Erro ao atualizar entregas ativas:', err);
+        setLoadError(err.message || 'Erro ao carregar entregas ativas.');
+      }
+      return [];
+    } finally {
+      if (queryId === activeQueryIdRef.current) {
+        setIsLoadingDeliveries(false);
+      }
+    }
   };
 
   useEffect(() => {
+    const totalCount = Object.values(companyCounts).reduce((a: number, b: number) => a + (b || 0), 0);
     const queueToSave = queue.map(d => {
       if (driver && d.id === driver.id) {
         return {
           ...d,
           totals: companyCounts,
-          total: scannedItems.length
+          total: totalCount
         };
       }
       return {
@@ -141,40 +370,59 @@ export function ScannerPanel() {
     });
     localStorage.setItem('driverQueueV3', JSON.stringify(queueToSave));
     window.dispatchEvent(new Event('driverQueueUpdated'));
-  }, [queue, driver, companyCounts, scannedItems]);
+  }, [queue, driver, companyCounts]);
 
   // bases agora vêm direto do banco (tabela 'bases'), não dos entregadores
 
-  const handleDragStart = (index: number) => setDraggedItemIndex(index);
+  const handleDragStart = (driverId: string) => setDraggedDriverId(driverId);
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
-  const handleDrop = (index: number) => {
-    if (draggedItemIndex === null) return;
-    const newQueue = [...queue];
-    const draggedItem = newQueue[draggedItemIndex];
-    newQueue.splice(draggedItemIndex, 1);
-    newQueue.splice(index, 0, draggedItem);
-    setQueue(newQueue);
-    setDraggedItemIndex(null);
+  const handleDrop = (targetDriverId: string) => {
+    if (!draggedDriverId || draggedDriverId === targetDriverId) return;
+    setQueue(prev => {
+      const fromIndex = prev.findIndex(d => String(d.id) === String(draggedDriverId));
+      const toIndex = prev.findIndex(d => String(d.id) === String(targetDriverId));
+      if (fromIndex === -1 || toIndex === -1) return prev;
+      const newQueue = [...prev];
+      const [draggedItem] = newQueue.splice(fromIndex, 1);
+      newQueue.splice(toIndex, 0, draggedItem);
+      return newQueue;
+    });
+    setDraggedDriverId(null);
   };
 
-  const addToQueue = (newDriver: DriverInfo) => setQueue(prev => [...prev, newDriver]);
+  const addToQueue = (newDriver: DriverInfo) => {
+    const driverWithBase: DriverInfo = {
+      ...newDriver,
+      base_location: newDriver.base_location || selectedBase || 'Guapimirim'
+    };
+    setQueue(prev => [...prev, driverWithBase]);
+  };
   const removeFromQueue = (driverId: string) => setQueue(prev => prev.filter(d => d.id !== driverId));
 
   /** Carrega bônus por empresa do entregador e define como driver ativo */
   const handleSelectDriver = async (d: DriverInfo) => {
-    const { data: bonusData } = await supabase
-      .from('driver_company_bonuses')
-      .select('company_id, bonus_amount')
-      .eq('driver_id', d.id);
+    if (loadingDriverId) return;
+    setLoadingDriverId(d.id);
+    try {
+      const { data: bonusData } = await supabase
+        .from('driver_company_bonuses')
+        .select('company_id, bonus_amount')
+        .eq('driver_id', d.id);
 
-    const bonusMap: Record<string, number> = {};
-    if (bonusData) {
-      bonusData.forEach((b: any) => {
-        bonusMap[b.company_id] = Number(b.bonus_amount);
-      });
+      const bonusMap: Record<string, number> = {};
+      if (bonusData) {
+        bonusData.forEach((b: any) => {
+          bonusMap[b.company_id] = Number(b.bonus_amount);
+        });
+      }
+      setDriverBonusMap(bonusMap);
+      setDriver(d);
+    } catch (err) {
+      console.error('Erro ao carregar bônus do entregador:', err);
+      setDriver(d);
+    } finally {
+      setLoadingDriverId(null);
     }
-    setDriverBonusMap(bonusMap);
-    setDriver(d);
   };
 
   const handlePackageScan = () => {
@@ -182,94 +430,93 @@ export function ScannerPanel() {
   };
 
   const handleManualCountChange = (companyName: string, newCountStr: string) => {
-    const newCount = parseInt(newCountStr, 10);
-    if (isNaN(newCount) || newCount < 0) return;
-    
-    const company = companies.find(c => c.name === companyName);
-    if (!company) return;
-
-    const currentCount = companyCounts[companyName] || 0;
-    if (newCount === currentCount) return;
-    
-    if (newCount > currentCount) {
-      const diff = newCount - currentCount;
-      const newItems: ScannedItem[] = [];
-      // Usa bônus específico da empresa para este entregador (ou 0 se não configurado)
-      const bonusForCompany = driverBonusMap[company.id] ?? 0;
-      for (let i = 0; i < diff; i++) {
-        newItems.push({
-          code: `PKG-${crypto.randomUUID().replace(/-/g, '').substring(0, 12).toUpperCase()}`,
-          companyId: company.id,
-          companyName: company.name,
-          time: new Date().toLocaleTimeString(),
-          status: 'success',
-          value: company.value_per_delivery,
-          bonus: bonusForCompany
-        });
-      }
-      setScannedItems(prev => [...newItems, ...prev]);
-    } else if (newCount < currentCount) {
-      const diff = currentCount - newCount;
-      setScannedItems(prev => {
-        let removed = 0;
-        return prev.filter(item => {
-          if (item.companyName === companyName && removed < diff) {
-            removed++;
-            return false;
-          }
-          return true;
-        });
-      });
+    if (newCountStr === '') {
+      setCompanyCounts(prev => ({ ...prev, [companyName]: 0 }));
+      return;
     }
+
+    const num = Number(newCountStr);
+    if (isNaN(num) || num < 0) return;
     
-    setCompanyCounts(prev => ({
-      ...prev,
-      [companyName]: newCount
-    }));
+    // Garante inteiro não negativo e limite de segurança razoável (100.000)
+    const newCount = Math.min(100000, Math.floor(num));
+    
+    setCompanyCounts(prev => {
+      if (prev[companyName] === newCount) return prev;
+      return {
+        ...prev,
+        [companyName]: newCount
+      };
+    });
   };
 
   const handleCancelLoading = () => {
     setDriver(null);
     setDriverBonusMap({});
-    setScannedItems([]);
     const resetCounts: Record<string, number> = {};
     companies.forEach(c => { resetCounts[c.name] = 0; });
     setCompanyCounts(resetCounts);
   };
 
   const handleFinishLoading = async () => {
-    if (driver && scannedItems.length > 0) {
-      const userRes = await supabase.auth.getUser();
-      const userId = userRes.data.user?.id;
+    // Prevenção contra múltiplos cliques e execuções concorrentes
+    if (isSubmittingRef.current || isSaving) return;
+    if (!driver) return;
+
+    const totalToLoad = (Object.values(companyCounts) as number[]).reduce((a: number, b: number) => a + (b || 0), 0);
+    if (totalToLoad <= 0) return;
+
+    isSubmittingRef.current = true;
+    setIsSaving(true);
+
+    try {
+      // Reutiliza dados do usuário autenticado já carregados na montagem
+      let userId = currentUserInfo?.id || currentUserId;
+      let userName = currentUserInfo?.name || '';
+      let userEmail = currentUserInfo?.email || '';
 
       if (!userId) {
-        alert("Erro: Usuário não autenticado!");
-        return;
+        const userRes = await supabase.auth.getUser();
+        userId = userRes.data.user?.id || null;
+        if (!userId) {
+          alert("Erro: Usuário não autenticado!");
+          return;
+        }
+        const { data: ud } = await supabase.from('users').select('name, email, role').eq('id', userId).single();
+        userName = ud?.name || '';
+        userEmail = ud?.email || userRes.data.user?.email || '';
       }
 
-      // Busca nome e email do usuário logado para o log
-      const { data: userData } = await supabase
-        .from('users')
-        .select('name, email, role')
-        .eq('id', userId)
-        .single();
+      // Gera o payload dos pacotes em memória somente no momento da finalização
+      const insertPayload: any[] = [];
+      for (const comp of companies) {
+        const count = companyCounts[comp.name] || 0;
+        if (count <= 0) continue;
+        const bonusForCompany = driverBonusMap[comp.id] ?? 0;
+        const deliveryValue = comp.value_per_delivery || 0;
+        const baseLocation = driver.base_location || 'Guapimirim';
 
-      // Preparar payload para bulk insert
-      const insertPayload = scannedItems.map(item => ({
-        barcode: item.code,
-        company_id: item.companyId,
-        driver_id: driver.id,
-        scanned_by: userId,
-        status: 'EM_ROTA',
-        delivery_value_snapshot: item.value || 0,
-        // Usa bônus por empresa se disponível no item, senão busca do mapa atual
-        driver_bonus_snapshot: item.bonus ?? driverBonusMap[item.companyId] ?? 0,
-        base_location: driver.base_location || 'Guapimirim'
-      }));
+        for (let i = 0; i < count; i++) {
+          insertPayload.push({
+            barcode: `PKG-${crypto.randomUUID().replace(/-/g, '').substring(0, 12).toUpperCase()}`,
+            company_id: comp.id,
+            driver_id: driver.id,
+            scanned_by: userId,
+            status: 'EM_ROTA',
+            delivery_value_snapshot: deliveryValue,
+            driver_bonus_snapshot: bonusForCompany,
+            base_location: baseLocation
+          });
+        }
+      }
 
-      const chunkSize = 100;
+      if (insertPayload.length === 0) return;
+
+      // Inserção em lotes seguros de 500 registros, sem pausas artificiais (setTimeout)
+      const chunkSize = 500;
       let hasError = false;
       let errorMessage = '';
+      let insertedCount = 0;
 
       for (let i = 0; i < insertPayload.length; i += chunkSize) {
         try {
@@ -280,8 +527,7 @@ export function ScannerPanel() {
             errorMessage = error.message;
             break;
           }
-          // Pequeno delay para evitar rate limit
-          await new Promise(resolve => setTimeout(resolve, 150));
+          insertedCount += chunk.length;
         } catch (err: any) {
           hasError = true;
           errorMessage = err.message || 'Erro de rede ou timeout';
@@ -290,27 +536,32 @@ export function ScannerPanel() {
       }
 
       if (hasError) {
-        alert("Erro ao salvar pacotes (apenas uma parte foi salva). Erro: " + errorMessage);
-      } else {
-        // Registrar log de carregamento
-        if (userData) {
-          await logAction(
-            userData.email || userData.name || 'Desconhecido',
-            'CARREGOU',
-            'CARREGAMENTO',
-            `${driver.name} — ${scannedItems.length} pacotes por ${userData.name || userData.email}`
-          );
+        if (insertedCount > 0) {
+          alert(`Atenção: Apenas ${insertedCount} de ${insertPayload.length} pacotes foram salvos devido a um erro: ${errorMessage}`);
+        } else {
+          alert("Erro ao salvar pacotes: " + errorMessage);
         }
+        await loadActiveDeliveries();
+      } else {
+        // Registrar log de auditoria
+        await logAction(
+          userEmail || userName || 'Desconhecido',
+          'CARREGOU',
+          'CARREGAMENTO',
+          `${driver.name} — ${insertPayload.length} pacotes por ${userName || userEmail || 'Conferente'}`
+        );
 
         removeFromQueue(driver.id);
         setDriver(null);
         setDriverBonusMap({});
-        setScannedItems([]);
         const resetCounts: Record<string, number> = {};
         companies.forEach(c => { resetCounts[c.name] = 0; });
         setCompanyCounts(resetCounts);
-        loadActiveDeliveries();
+        await loadActiveDeliveries();
       }
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSaving(false);
     }
   };
 
@@ -428,21 +679,25 @@ export function ScannerPanel() {
     if (!confirmed) return;
     setFinalizing(true);
     try {
-      const userRes = await supabase.auth.getUser();
-      const userId = userRes.data.user?.id;
-      let userName = 'Desconhecido';
-      let userEmail = 'Desconhecido';
-      if (userId) {
-        const { data: ud } = await supabase.from('users').select('name, email').eq('id', userId).single();
-        if (ud) {
-          userName = ud.name || 'Desconhecido';
-          userEmail = ud.email || 'Desconhecido';
+      let userId = currentUserInfo?.id || currentUserId;
+      let userName = currentUserInfo?.name || 'Desconhecido';
+      let userEmail = currentUserInfo?.email || 'Desconhecido';
+
+      if (!userId) {
+        const userRes = await supabase.auth.getUser();
+        userId = userRes.data.user?.id || null;
+        if (userId) {
+          const { data: ud } = await supabase.from('users').select('name, email').eq('id', userId).single();
+          if (ud) {
+            userName = ud.name || 'Desconhecido';
+            userEmail = ud.email || 'Desconhecido';
+          }
         }
       }
 
       const barcodes = selectedActiveDelivery.scannedItems.map((i: any) => i.code);
       
-      const chunkSize = 100;
+      const chunkSize = 500;
       let hasError = false;
       let errorMessage = '';
 
@@ -459,7 +714,6 @@ export function ScannerPanel() {
             errorMessage = error.message;
             break;
           }
-          await new Promise(resolve => setTimeout(resolve, 150));
         } catch (err: any) {
           hasError = true;
           errorMessage = err.message || 'Erro de conexão';
@@ -478,7 +732,7 @@ export function ScannerPanel() {
 
         await logAction(
           userEmail !== 'Desconhecido' ? userEmail : userName,
-          'FINALIZOU',
+          'FINALIZOU' as any,
           'CARREGAMENTO',
           `Entregas de ${selectedActiveDelivery.driverName} finalizadas. Carregado por: ${carregouName} | Finalizado por: ${userName}`
         );
@@ -500,41 +754,182 @@ export function ScannerPanel() {
   }, [driver, companies]);
 
   if (!driver) {
-    const availableDrivers = allDrivers.filter(d => 
-      (d.base_location || 'Guapimirim') === selectedBase && 
-      !queue.find(q => q.id === d.id) &&
-      !activeDeliveries.find(ad => ad.id === d.id)
+    const isNoneSelected = selectedBase === 'Nenhuma';
+    const currentBase = isNoneSelected ? 'Nenhuma' : (selectedBase || bases[0] || 'Guapimirim');
+    const normalize = (str?: string | null) => (str || '').trim().toLowerCase();
+    const currentBaseNorm = normalize(currentBase);
+
+    const getDriverBase = (d: { id: string | number; base_location?: string }) => {
+      const match = allDrivers.find(item => String(item.id) === String(d.id));
+      return normalize(d.base_location || match?.base_location || 'Guapimirim');
+    };
+
+    const getActiveDeliveryBase = (ad: any) => {
+      const match = allDrivers.find(item => String(item.id) === String(ad.id));
+      return normalize(ad.baseLocation || ad.base_location || match?.base_location || 'Guapimirim');
+    };
+
+    // 1. Entregadores Disponíveis (filtrados pela base selecionada, ou vazio se 'Nenhuma')
+    const filteredAvailableDrivers = isNoneSelected ? [] : allDrivers.filter(d => 
+      getDriverBase(d) === currentBaseNorm && 
+      !queue.some(q => String(q.id) === String(d.id)) &&
+      !activeDeliveries.some(ad => String(ad.id) === String(d.id))
+    );
+
+    // 2. Fila de Carregamento (filtrada pela base selecionada, ou vazio se 'Nenhuma')
+    const filteredQueue = isNoneSelected ? [] : queue.filter(d => 
+      getDriverBase(d) === currentBaseNorm
+    );
+
+    // 3. Em Rota (filtrados pela base selecionada, ou vazio se 'Nenhuma')
+    const filteredActiveDeliveries = isNoneSelected ? [] : activeDeliveries.filter(ad => 
+      getActiveDeliveryBase(ad) === currentBaseNorm
     );
 
     return (
-      <div className="flex flex-col space-y-8 pb-8">
-        {/* Section: Adicionar à Fila */}
-        <div>
-          <h2 className="text-xl font-bold tracking-tight mb-1">Adicionar Entregador</h2>
-          <p className="text-muted-foreground mb-4">Selecione uma base para visualizar e adicionar os entregadores disponíveis.</p>
-          
-          <div className="max-w-xs mb-6">
-            <Select value={selectedBase} onValueChange={setSelectedBase}>
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Selecione a Base" />
-              </SelectTrigger>
-              <SelectContent>
-                {bases.map(base => (
-                  <SelectItem key={base} value={base}>{base}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+      <div className="flex flex-col space-y-6 pb-8">
+        {/* Top Header com Seletor de Base e Botão de Atualizar posicionado acima das abas */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/50">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">Carregamentos</h1>
+            <p className="text-sm text-muted-foreground">Gerencie entregadores disponíveis, fila e entregas em rota por base.</p>
           </div>
 
-          {selectedBase && (
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3 bg-card border border-border px-3.5 py-1.5 rounded-xl shadow-xs">
+              <Building2 className="h-4 w-4 text-primary" />
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider whitespace-nowrap">Base:</span>
+              <div className="w-48 sm:w-56">
+                <Select value={selectedBase} onValueChange={handleBaseChange}>
+                  <SelectTrigger className="bg-background border-border shadow-none font-semibold text-foreground h-9">
+                    <SelectValue placeholder="Selecione a Base" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Nenhuma" className="cursor-pointer font-medium">Nenhuma</SelectItem>
+                    {bases.map(base => (
+                      <SelectItem key={base} value={base} className="cursor-pointer font-medium">{base}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-10 w-10 border-border bg-card hover:bg-accent shrink-0 cursor-pointer"
+              onClick={() => loadActiveDeliveries(selectedBase)}
+              disabled={isNoneSelected || isLoadingDeliveries}
+              title={isNoneSelected ? "Selecione uma base para atualizar" : "Atualizar dados"}
+            >
+              <RefreshCw className={`h-4 w-4 text-muted-foreground ${!isNoneSelected && isLoadingDeliveries ? 'animate-spin text-primary' : ''}`} />
+            </Button>
+          </div>
+        </div>
+
+        {/* Navigation Tabs */}
+        <div className="flex border-b border-border gap-1 sm:gap-2 overflow-x-auto">
+          <button
+            type="button"
+            onClick={() => setActiveTab('disponiveis')}
+            className={`flex items-center gap-2 pb-3.5 px-4 font-semibold text-sm transition-all border-b-2 -mb-px whitespace-nowrap cursor-pointer ${
+              activeTab === 'disponiveis'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'
+            }`}
+          >
+            <Users className="h-4 w-4" />
+            <span>Disponíveis</span>
+            <span className={`px-2 py-0.5 text-xs rounded-full font-bold transition-colors ${
+              activeTab === 'disponiveis'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground'
+            }`}>
+              {isNoneSelected ? 0 : isLoadingDeliveries ? <Loader2 className="h-3 w-3 animate-spin inline" /> : filteredAvailableDrivers.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('fila')}
+            className={`flex items-center gap-2 pb-3.5 px-4 font-semibold text-sm transition-all border-b-2 -mb-px whitespace-nowrap cursor-pointer ${
+              activeTab === 'fila'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'
+            }`}
+          >
+            <ListOrdered className="h-4 w-4" />
+            <span>Fila de carregamento</span>
+            <span className={`px-2 py-0.5 text-xs rounded-full font-bold transition-colors ${
+              activeTab === 'fila'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground'
+            }`}>
+              {isNoneSelected ? 0 : isLoadingDeliveries ? <Loader2 className="h-3 w-3 animate-spin inline" /> : filteredQueue.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('em_rota')}
+            className={`flex items-center gap-2 pb-3.5 px-4 font-semibold text-sm transition-all border-b-2 -mb-px whitespace-nowrap cursor-pointer ${
+              activeTab === 'em_rota'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'
+            }`}
+          >
+            <Truck className="h-4 w-4" />
+            <span>Em rota</span>
+            <span className={`px-2 py-0.5 text-xs rounded-full font-bold transition-colors ${
+              activeTab === 'em_rota'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground'
+            }`}>
+              {isNoneSelected ? 0 : isLoadingDeliveries ? <Loader2 className="h-3 w-3 animate-spin inline" /> : filteredActiveDeliveries.length}
+            </span>
+          </button>
+        </div>
+
+        {/* Tab 1: Disponíveis */}
+        {activeTab === 'disponiveis' && (
+          <div className="space-y-6">
             <div>
-              {availableDrivers.length === 0 ? (
-                <div className="p-4 text-center bg-card border border-border rounded-xl text-muted-foreground text-sm">
-                  Todos os entregadores desta base já estão na fila.
+              <div className="mb-4">
+                <h2 className="text-xl font-bold tracking-tight mb-1">Entregadores Disponíveis</h2>
+                <p className="text-muted-foreground text-sm">
+                  {isNoneSelected ? 'Selecione uma base no menu superior para visualizar os entregadores.' : `Entregadores aptos para novo carregamento na base ${currentBase}.`}
+                </p>
+              </div>
+
+              {isNoneSelected ? (
+                <div className="p-8 text-center bg-card border border-border rounded-xl text-muted-foreground text-sm">
+                  Selecione uma base no menu superior para visualizar os entregadores disponíveis.
+                </div>
+              ) : isLoadingDeliveries ? (
+                <div className="p-12 text-center bg-card border border-border rounded-xl space-y-3">
+                  <div className="h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin mx-auto" />
+                  <p className="text-sm font-medium text-muted-foreground animate-pulse">
+                    Carregando entregadores e cargas em rota da base {currentBase}...
+                  </p>
+                </div>
+              ) : loadError ? (
+                <div className="p-6 bg-destructive/10 border border-destructive/20 rounded-xl text-center space-y-3">
+                  <div className="flex items-center justify-center gap-2 text-destructive font-semibold text-sm">
+                    <AlertCircle className="h-5 w-5" />
+                    <span>{loadError}</span>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => loadActiveDeliveries(selectedBase)} className="border-destructive/30 hover:bg-destructive/10 text-destructive cursor-pointer">
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Tentar novamente
+                  </Button>
+                </div>
+              ) : filteredAvailableDrivers.length === 0 ? (
+                <div className="p-8 text-center bg-card border border-border rounded-xl text-muted-foreground text-sm">
+                  Todos os entregadores da base {currentBase} já estão na fila ou em rota.
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {availableDrivers.map((d) => (
+                  {filteredAvailableDrivers.map((d) => (
                     <Card key={d.id} className="bg-card border-border">
                       <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative">
                         <div className="h-12 w-12 bg-secondary rounded-full flex items-center justify-center border-2 border-primary/10">
@@ -564,138 +959,199 @@ export function ScannerPanel() {
                 </div>
               )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* Section: Fila de Carregamento */}
-        <div className="pt-6 border-t border-border">
-          <h2 className="text-2xl font-bold tracking-tight mb-1">Fila de Carregamento</h2>
-          <p className="text-muted-foreground mb-4">Arraste os entregadores para organizar a ordem de carregamento.</p>
-          
-          {queue.length === 0 ? (
-            <div className="p-8 text-center bg-card border border-border rounded-xl text-muted-foreground">
-              A fila está vazia. Adicione entregadores abaixo.
+        {/* Tab 2: Fila de carregamento */}
+        {activeTab === 'fila' && (
+          <div className="space-y-6">
+            <div>
+              <div className="mb-4">
+                <h2 className="text-2xl font-bold tracking-tight mb-1">Fila de Carregamento</h2>
+                <p className="text-muted-foreground text-sm">
+                  {isNoneSelected ? 'Selecione uma base no menu superior para visualizar a fila.' : `Arraste os entregadores para organizar a ordem de carregamento na base ${currentBase}.`}
+                </p>
+              </div>
+              
+              {isNoneSelected ? (
+                <div className="p-8 text-center bg-card border border-border rounded-xl text-muted-foreground text-sm">
+                  Selecione uma base no menu superior para visualizar a fila de carregamento.
+                </div>
+              ) : isLoadingDeliveries ? (
+                <div className="p-12 text-center bg-card border border-border rounded-xl space-y-3">
+                  <div className="h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin mx-auto" />
+                  <p className="text-sm font-medium text-muted-foreground animate-pulse">
+                    Carregando fila de carregamento da base {currentBase}...
+                  </p>
+                </div>
+              ) : filteredQueue.length === 0 ? (
+                <div className="p-12 text-center bg-card border border-border rounded-xl text-muted-foreground space-y-3">
+                  <p className="text-sm">A fila está vazia para a base {currentBase}.</p>
+                  <Button variant="outline" size="sm" onClick={() => setActiveTab('disponiveis')}>
+                    Ver entregadores disponíveis
+                  </Button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {filteredQueue.map((d, index) => {
+                    const isFirst = index === 0;
+                    return (
+                      <div 
+                        key={d.id}
+                        draggable
+                        onDragStart={() => handleDragStart(d.id)}
+                        onDragOver={handleDragOver}
+                        onDrop={() => handleDrop(d.id)}
+                        className="h-full"
+                      >
+                        <Card 
+                          className={`relative overflow-hidden cursor-pointer transition-all hover:shadow-md h-full flex flex-col ${isFirst ? 'border-primary shadow-[0_0_15px_rgba(59,130,246,0.15)] bg-primary/5' : 'bg-card border-border hover:border-primary/50'}`}
+                          onClick={() => !loadingDriverId && handleSelectDriver(d)}
+                        >
+                          {isFirst && (
+                            <div className="absolute top-0 left-0 w-full h-1 bg-primary"></div>
+                          )}
+                          <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative flex-1">
+                            <div className="absolute top-2 right-2 text-muted-foreground opacity-50 cursor-grab hover:opacity-100">
+                              <GripVertical className="h-5 w-5" />
+                            </div>
+                            <div className="h-16 w-16 bg-secondary rounded-full flex items-center justify-center border-2 border-primary/20 shrink-0">
+                              <User className="h-8 w-8 text-muted-foreground" />
+                            </div>
+                            <div className="flex-1 flex flex-col justify-center">
+                              <h3 className="font-bold text-sm line-clamp-1" title={d.name}>{d.name}</h3>
+                              <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+                                <Truck className="h-3 w-3"/> {d.vehicle_type || '-'}
+                              </p>
+                              <p className="text-xs font-mono bg-secondary px-2 py-0.5 rounded mt-1 inline-block">{d.vehicle_plate || 'Sem Placa'}</p>
+                            </div>
+                            <div className="w-full pt-3 border-t border-border flex flex-wrap justify-between items-center gap-2 mt-auto">
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 text-xs px-2"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  removeFromQueue(d.id);
+                                }}
+                              >
+                                Remover
+                              </Button>
+                              <div className="flex flex-wrap items-center justify-end gap-2 flex-1">
+                                <Button 
+                                  variant="default" 
+                                  size="sm" 
+                                  className="h-7 text-xs px-3"
+                                  disabled={loadingDriverId === d.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSelectDriver(d);
+                                  }}
+                                >
+                                  {loadingDriverId === d.id ? 'Carregando...' : 'Carregar'}
+                                </Button>
+                                <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md whitespace-nowrap ${isFirst ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
+                                  {isFirst ? 'Carregando' : 'Aguardando'}
+                                </span>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {queue.map((d, index) => {
-                const isFirst = index === 0;
-                return (
-                  <div 
-                    key={d.id}
-                    draggable
-                    onDragStart={() => handleDragStart(index)}
-                    onDragOver={handleDragOver}
-                    onDrop={() => handleDrop(index)}
-                    className="h-full"
-                  >
+          </div>
+        )}
+
+        {/* Tab 3: Em rota */}
+        {activeTab === 'em_rota' && (
+          <div className="space-y-6">
+            <div>
+              <div className="mb-4">
+                <h2 className="text-xl font-bold tracking-tight mb-1">Em Rota (Saiu para Entrega)</h2>
+                <p className="text-muted-foreground text-sm">
+                  {isNoneSelected ? 'Selecione uma base no menu superior para visualizar as entregas em rota.' : `Entregadores da base ${currentBase} que estão atualmente realizando entregas.`}
+                </p>
+              </div>
+              
+              <div className="relative mb-6">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Search className="h-5 w-5 text-muted-foreground" />
+                </div>
+                <Input 
+                  placeholder="Pesquisar entregador por nome..." 
+                  className="pl-10 max-w-md bg-background"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+
+              {isNoneSelected ? (
+                <div className="p-8 text-center bg-card border border-border rounded-xl text-muted-foreground text-sm">
+                  Selecione uma base no menu superior para visualizar as entregas em rota.
+                </div>
+              ) : isLoadingDeliveries ? (
+                <div className="p-12 text-center bg-card border border-border rounded-xl space-y-3">
+                  <div className="h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin mx-auto" />
+                  <p className="text-sm font-medium text-muted-foreground animate-pulse">
+                    Buscando entregadores em rota da base {currentBase}...
+                  </p>
+                </div>
+              ) : loadError ? (
+                <div className="p-6 bg-destructive/10 border border-destructive/20 rounded-xl text-center space-y-3">
+                  <div className="flex items-center justify-center gap-2 text-destructive font-semibold text-sm">
+                    <AlertCircle className="h-5 w-5" />
+                    <span>{loadError}</span>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => loadActiveDeliveries(selectedBase)} className="border-destructive/30 hover:bg-destructive/10 text-destructive cursor-pointer">
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Tentar novamente
+                  </Button>
+                </div>
+              ) : isNoneSelected ? (
+                <div className="p-8 text-center bg-card border border-border rounded-xl text-muted-foreground text-sm">
+                  Selecione uma base no menu superior para visualizar as entregas em rota.
+                </div>
+              ) : filteredActiveDeliveries.length === 0 ? (
+                <div className="p-8 text-center bg-card border border-border rounded-xl text-muted-foreground text-sm">
+                  Nenhum entregador da base {currentBase} em rota no momento.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {filteredActiveDeliveries
+                    .filter(load => (load.driverName || '').toLowerCase().includes(searchQuery.toLowerCase()))
+                    .map((load) => (
                     <Card 
-                      className={`relative overflow-hidden cursor-pointer transition-all hover:shadow-md h-full flex flex-col ${isFirst ? 'border-primary shadow-[0_0_15px_rgba(59,130,246,0.15)] bg-primary/5' : 'bg-card border-border hover:border-primary/50'}`}
-                      onClick={() => handleSelectDriver(d)}
+                      key={load.id} 
+                      className="bg-card border-border cursor-pointer hover:border-primary/50 transition-colors"
+                      onClick={() => setSelectedActiveDelivery(load)}
                     >
-                      {isFirst && (
-                        <div className="absolute top-0 left-0 w-full h-1 bg-primary"></div>
-                      )}
-                      <CardContent className="p-4 flex flex-col items-center text-center space-y-3 relative flex-1">
-                        <div className="absolute top-2 right-2 text-muted-foreground opacity-50 cursor-grab hover:opacity-100">
-                          <GripVertical className="h-5 w-5" />
-                        </div>
-                        <div className="h-16 w-16 bg-secondary rounded-full flex items-center justify-center border-2 border-primary/20 shrink-0">
-                          <User className="h-8 w-8 text-muted-foreground" />
-                        </div>
-                        <div className="flex-1 flex flex-col justify-center">
-                          <h3 className="font-bold text-sm line-clamp-1" title={d.name}>{d.name}</h3>
-                          <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
-                            <Truck className="h-3 w-3"/> {d.vehicle_type || '-'}
-                          </p>
-                          <p className="text-xs font-mono bg-secondary px-2 py-0.5 rounded mt-1 inline-block">{d.vehicle_plate || 'Sem Placa'}</p>
-                        </div>
-                        <div className="w-full pt-3 border-t border-border flex flex-wrap justify-between items-center gap-2 mt-auto">
-                          <Button 
-                            variant="ghost" 
-                            size="sm" 
-                            className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 text-xs px-2"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeFromQueue(d.id);
-                            }}
-                          >
-                            Remover
-                          </Button>
-                          <div className="flex flex-wrap items-center justify-end gap-2 flex-1">
-                            <Button 
-                              variant="default" 
-                              size="sm" 
-                              className="h-7 text-xs px-3"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleSelectDriver(d);
-                              }}
-                            >
-                              Carregar
-                            </Button>
-                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md whitespace-nowrap ${isFirst ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
-                              {isFirst ? 'Carregando' : 'Aguardando'}
-                            </span>
+                      <div className="bg-primary/10 text-primary px-4 py-2 text-xs font-bold flex items-center gap-2 uppercase tracking-wider">
+                        <Truck className="h-3 w-3" />
+                        SAIU PARA ENTREGA
+                      </div>
+                      <CardContent className="p-4 flex flex-col space-y-3">
+                        <div className="flex items-center gap-3">
+                          <div className="h-10 w-10 bg-secondary rounded-full flex items-center justify-center border border-primary/20">
+                            <User className="h-5 w-5 text-muted-foreground" />
                           </div>
+                          <div>
+                            <h3 className="font-bold text-sm line-clamp-1" title={load.driverName}>{load.driverName}</h3>
+                            <p className="text-xs text-muted-foreground mt-0.5">{load.vehicle} • {load.plate}</p>
+                          </div>
+                        </div>
+                        <div className="pt-3 border-t border-border flex justify-between items-center text-sm">
+                          <span className="text-muted-foreground">Mercadorias:</span>
+                          <span className="font-bold text-foreground">{load.scannedItems?.length || 0} pacotes</span>
                         </div>
                       </CardContent>
                     </Card>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Section: Entregadores em Rota */}
-        {activeDeliveries.length > 0 && (
-          <div className="pt-6 border-t border-border">
-            <h2 className="text-xl font-bold tracking-tight mb-1">Em Rota (Saiu para Entrega)</h2>
-            <p className="text-muted-foreground mb-4">Entregadores que estão atualmente realizando entregas.</p>
-            
-            <div className="relative mb-6">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Search className="h-5 w-5 text-muted-foreground" />
-              </div>
-              <Input 
-                placeholder="Pesquisar entregador por nome..." 
-                className="pl-10 max-w-md bg-background"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {activeDeliveries
-                .filter(load => (load.driverName || '').toLowerCase().includes(searchQuery.toLowerCase()))
-                .map((load) => (
-                <Card 
-                  key={load.id} 
-                  className="bg-card border-border cursor-pointer hover:border-primary/50 transition-colors"
-                  onClick={() => setSelectedActiveDelivery(load)}
-                >
-                  <div className="bg-primary/10 text-primary px-4 py-2 text-xs font-bold flex items-center gap-2 uppercase tracking-wider">
-                    <Truck className="h-3 w-3" />
-                    SAIU PARA ENTREGA
-                  </div>
-                  <CardContent className="p-4 flex flex-col space-y-3">
-                    <div className="flex items-center gap-3">
-                      <div className="h-10 w-10 bg-secondary rounded-full flex items-center justify-center border border-primary/20">
-                        <User className="h-5 w-5 text-muted-foreground" />
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-sm line-clamp-1" title={load.driverName}>{load.driverName}</h3>
-                        <p className="text-xs text-muted-foreground mt-0.5">{load.vehicle} • {load.plate}</p>
-                      </div>
-                    </div>
-                    <div className="pt-3 border-t border-border flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground">Mercadorias:</span>
-                      <span className="font-bold text-foreground">{load.scannedItems?.length || 0} pacotes</span>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -935,8 +1391,12 @@ export function ScannerPanel() {
             <Button variant="outline" className="h-14 px-6 text-base font-semibold" onClick={handleCancelLoading}>
               Voltar
             </Button>
-            <Button className="flex-1 h-14 text-lg font-bold" onClick={handleFinishLoading} disabled={scannedItems.length === 0}>
-              Finalizar Carregamento
+            <Button 
+              className="flex-1 h-14 text-lg font-bold" 
+              onClick={handleFinishLoading} 
+              disabled={totalScanned === 0 || isSaving}
+            >
+              {isSaving ? 'Finalizando...' : 'Finalizar Carregamento'}
             </Button>
           </div>
         </div>

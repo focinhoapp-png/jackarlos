@@ -3,7 +3,7 @@ import { Package, DollarSign, Truck, Phone, CheckCircle2, Navigation, AlertCircl
 import { Card, CardContent, CardHeader, CardTitle } from '@/src/components/ui/card';
 import { Button } from '@/src/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/src/components/ui/dialog';
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 
 interface PackageItem {
   barcode: string;
@@ -63,10 +63,13 @@ export function DriverPanel() {
     const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-    const { data: pkgs } = await supabase
-      .from('packages')
-      .select('barcode, status, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, companies(id, name)')
-      .eq('driver_id', driverId).limit(999999);
+    const { data: pkgs } = await fetchAllPaginated(() =>
+      supabase
+        .from('packages')
+        .select('id, barcode, status, scanned_at, delivery_value_snapshot, driver_bonus_snapshot, companies(id, name)')
+        .eq('driver_id', driverId)
+        .order('id', { ascending: false })
+    );
 
     if (pkgs) {
       const active: PackageItem[] = [];

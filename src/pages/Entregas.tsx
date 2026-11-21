@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '@/src/lib/supabase';
+import { supabase, fetchAllPaginated } from '@/src/lib/supabase';
 import { Card, CardContent } from '@/src/components/ui/card';
 import { Truck, Package, Clock, Building2 } from 'lucide-react';
 
@@ -24,12 +24,15 @@ export function Entregas() {
       .single();
 
     if (driverData) {
-      const { data, error } = await supabase
-        .from('packages')
-        .select('id, barcode, company_id, scanned_at, companies(name, color_hex, logo_url)')
-        .eq('driver_id', driverData.id)
-        .eq('status', 'EM_ROTA')
-        .order('scanned_at', { ascending: false }).limit(999999);
+      const { data, error } = await fetchAllPaginated(() =>
+        supabase
+          .from('packages')
+          .select('id, barcode, company_id, scanned_at, companies(name, color_hex, logo_url)')
+          .eq('driver_id', driverData.id)
+          .eq('status', 'EM_ROTA')
+          .order('scanned_at', { ascending: false })
+          .order('id', { ascending: false })
+      );
         
       if (!error && data) {
         const grouped = data.reduce((acc: any, pkg: any) => {
